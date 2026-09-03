@@ -1056,6 +1056,139 @@ button {
   color: var(--danger);
 }
 
+/* ---- 12.6 toast 浮窗 ---- */
+.drive-toasts {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: min(360px, calc(100vw - 32px));
+  pointer-events: none;
+}
+
+.drive-toast {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid rgb(var(--line) / 0.3);
+  background: var(--card-fill);
+  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
+  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
+  box-shadow: 0 16px 40px -20px rgb(var(--shadow) / 0.5);
+  color: var(--ink);
+  font-size: 0.88rem;
+  pointer-events: auto;
+  animation: toast-in 0.22s ease both;
+}
+
+.drive-toast[data-tone='success'] {
+  border-color: color-mix(in srgb, #10b981 50%, transparent);
+}
+
+.drive-toast[data-tone='error'] {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+}
+
+.drive-toast[data-leaving='true'] {
+  animation: toast-out 0.18s ease both;
+}
+
+.drive-toast__icon {
+  width: 18px;
+  height: 18px;
+  flex-shrink: 0;
+  color: var(--ink-soft);
+}
+
+.drive-toast[data-tone='success'] .drive-toast__icon { color: #059669; }
+.drive-toast[data-tone='error'] .drive-toast__icon { color: var(--danger); }
+
+.drive-toast__body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.drive-toast__title {
+  font-weight: 600;
+  font-size: 0.9rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-toast__detail {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.drive-toast__close {
+  width: 22px;
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--ink-faint);
+  border-radius: 6px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.drive-toast__close:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+.drive-toast__progress {
+  position: relative;
+  height: 4px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
+  overflow: hidden;
+}
+
+.drive-toast__progress-bar {
+  position: absolute;
+  inset: 0;
+  width: 0%;
+  background: linear-gradient(90deg, var(--color-primary), var(--color-accent));
+  border-radius: 999px;
+  transition: width 0.18s linear;
+}
+
+.drive-toast__progress-bar[data-indeterminate='true'] {
+  width: 30%;
+  animation: toast-progress-indet 1.2s ease-in-out infinite;
+}
+
+@keyframes toast-in {
+  from { opacity: 0; transform: translateY(8px) scale(0.98); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes toast-out {
+  from { opacity: 1; transform: translateY(0) scale(1); }
+  to { opacity: 0; transform: translateY(4px) scale(0.98); }
+}
+
+@keyframes toast-progress-indet {
+  0% { left: -30%; }
+  100% { left: 100%; }
+}
+
 /* ---- 13. 页脚 ---- */
 .drive-footer {
   width: 100%;
