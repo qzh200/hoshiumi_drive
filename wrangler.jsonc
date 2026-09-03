@@ -10,5 +10,7 @@
   // functions/_config.generated.json。敏感字段（DRIVE_MASTER_KEY、
   // WEBDAV_USERNAME / WEBDAV_PASSWORD）请通过 .dev.vars（本地）或
   // `wrangler pages secret put`（生产）注入。
-  "observability": { "enabled": true, "head_sampling_rate": 1 }
+  //
+  // 注意：本文件同时被本地 dev 与 Pages 部署读取，只能包含 Pages 模式支持的键
+  //（observability 等 Workers 专属键会让 `wrangler pages deploy` 校验失败）。
 }
