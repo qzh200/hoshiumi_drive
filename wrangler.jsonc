@@ -1,0 +1,11 @@
+{
+  "name": "hoshiumi-drive",
+  "compatibility_date": "2026-09-03",
+  "pages_build_output_dir": "./public",
+  "d1_databases": [{ "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "replace-with-your-d1-database-id" }],
+  "vars": {
+    "STORAGE_DRIVER": "webdav",
+    "WEBDAV_ENDPOINT": "https://pan.moe/dav"
+  },
+  "observability": { "enabled": true, "head_sampling_rate": 1 }
+}
