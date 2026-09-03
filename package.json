@@ -1,24 +1,25 @@
 {
   "name": "hoshiumi-drive",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "config:build": "node ./scripts/build-storage-config.mjs",
     "predev": "pnpm config:build && node -e \"if(!require('fs').existsSync('dist')){require('child_process').execSync('pnpm build',{stdio:'inherit'})}\"",
     "prebuild": "pnpm config:build",
     "postbuild": "node ./scripts/postbuild.mjs",
-    "dev": "wrangler pages dev dist --d1=DB --port 8788 --ip 127.0.0.1 --compatibility-date 2026-09-03",
+    "dev": "wrangler pages dev dist --port 8788 --ip 127.0.0.1 --compatibility-date 2026-09-03",
     "dev:astro": "astro dev",
     "build": "astro build && node ./scripts/postbuild.mjs",
     "preview": "astro preview",
     "check": "astro check",
-    "db:migrate:local": "wrangler d1 execute DB --local --file=migrations/0001_init.sql",
-    "db:migrate:remote": "wrangler d1 execute DB --remote --file=migrations/0001_init.sql",
     "deploy": "pnpm build && wrangler pages deploy dist"
   },
   "dependencies": {
     "astro": "^7.2.10",
+    "client-zip": "^2.5.0",
+    "highlight.js": "^11.12.0",
+    "marked": "^18.0.11",
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
   },

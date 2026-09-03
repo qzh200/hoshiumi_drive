@@ -1,3 +1,9 @@
-DRIVE_MASTER_KEY=replace-with-a-long-random-secret
+# 复制为 .dev.vars（已在 .gitignore）后填入真实凭据。
+# 重构后 Drive 已经是只读 + 无认证，env 里只需要 WebDAV 凭据。
+
 WEBDAV_USERNAME=your-webdav-username
 WEBDAV_PASSWORD=your-webdav-password
+
+# 可选：覆盖 storage.yaml 里的同名配置（不写则用 yaml 默认值）
+# WEBDAV_ENDPOINT=https://your-webdav.example/dav
+# WEBDAV_REQUEST_TIMEOUT_MS=30000

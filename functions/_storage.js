@@ -1,8 +1,9 @@
-// _storage.js —— 存储驱动（WebDAV）
+// _storage.js —— 存储驱动（WebDAV，只读）
 //
-// 配置来自 _config.js：每次调用 list/get/put/... 时从 env 拿最新 endpoint / 凭据。
-// 之所以「每次」都重新拿而不是缓存，是因为 Pages Functions 可能在不同 isolate
-// 上执行，跨请求的全局变量也不可靠。
+// 只保留 list / get 两个动作；put / remove / move / mkdir 已随写操作一起删除。
+// get() 支持 Range 透传：调用方传入原始请求的 Range 头，我们转发到 WebDAV，
+// 再把状态码（200 / 206）、Accept-Ranges、Content-Range 等关键头原样回给浏览器。
+// 这样视频/音频预览能 seek、超大文件能断点续传。
 import { getStorageConfig } from './_config.js';
 
 function urlFor(webdav, path = '') {
@@ -28,13 +29,10 @@ function xmlValue(xml, tag) {
 }
 
 /**
- * 提取 <resourcetype>...</resourcetype> 块的内容，
- * 进一步判断里面是否含 <...collection...>。
- *
- * 不能用 `/<[^>]*collection\s*\/?\s*>/i` 这种形式直接扫整个 response 块：
- * WebDAV 的真实 XML 是 `<D:collection xmlns:D="DAV:"/>`，里面的属性让 `>` 之前的
- * 内容把 collection 跟下一个 `>` 隔开，简单的 `<...collection...>` 匹配不上。
- * 这里先把 resourcetype 子树切出来，再判断子树里有没有 collection。
+ * 提取 <resourcetype>...</resourcetype> 块的内容，进一步判断里面是否含 <...collection/>。
+ * 不能用 `/<[^>]*collection\s*\/?\s*>/i` 这种形式直接扫整个 response 块：WebDAV 的真实
+ * XML 是 `<D:collection xmlns:D="DAV:"/>`，里面的属性让 `>` 之前的内容把 collection
+ * 跟下一个 `>` 隔开，简单的 `<...collection...>` 匹配不上。
  */
 function isCollection(item) {
   const m = item.match(/<[^>]*resourcetype[^>]*>([\s\S]*?)<\s*\/\s*[^>]*resourcetype\s*>/i);
@@ -47,6 +45,29 @@ function withTimeout(init, timeoutMs) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeoutMs);
   return { init: { ...init, signal: controller.signal }, cancel: () => clearTimeout(timer) };
+}
+
+/**
+ * 透传到上游的关键响应头（其余由调用方按需覆盖）。
+ * 不透传的有：set-cookie、transfer-encoding、connection 等连接性头。
+ */
+const PASSTHROUGH_HEADERS = [
+  'content-type',
+  'content-length',
+  'content-range',
+  'accept-ranges',
+  'last-modified',
+  'etag',
+  'cache-control',
+];
+
+function buildPassthroughHeaders(upstream) {
+  const out = new Headers();
+  for (const name of PASSTHROUGH_HEADERS) {
+    const value = upstream.headers.get(name);
+    if (value) out.set(name, value);
+  }
+  return out;
 }
 
 export async function list(env, prefix = '') {
@@ -75,56 +96,22 @@ export async function list(env, prefix = '') {
   return { folders, files };
 }
 
-export async function get(env, path) {
+/**
+ * GET 单文件。支持 Range 透传：传入原始请求的 Range 头（bytes=...）即可。
+ * 返回值是个 { ok, status, headers, body } 包装，调用方按需构造 Response。
+ */
+export async function get(env, path, { rangeHeader } = {}) {
   const cfg = getStorageConfig(env);
   if (cfg.driver !== 'webdav') throw new Error(`Unsupported storage driver: ${cfg.driver}`);
-  const { init, cancel } = withTimeout({ method: 'GET', headers: { Authorization: authFor(cfg.webdav) } }, cfg.requestTimeoutMs);
+  const headers = { Authorization: authFor(cfg.webdav) };
+  if (rangeHeader) headers.Range = rangeHeader;
+  const { init, cancel } = withTimeout({ method: 'GET', headers }, cfg.requestTimeoutMs);
   const response = await fetch(urlFor(cfg.webdav, path), init);
   cancel();
-  return response;
-}
-
-export async function put(env, path, body, contentType) {
-  const cfg = getStorageConfig(env);
-  if (cfg.driver !== 'webdav') throw new Error(`Unsupported storage driver: ${cfg.driver}`);
-  const { init, cancel } = withTimeout(
-    { method: 'PUT', body, headers: { 'Content-Type': contentType, Authorization: authFor(cfg.webdav) } },
-    cfg.requestTimeoutMs,
-  );
-  const response = await fetch(urlFor(cfg.webdav, path), init);
-  cancel();
-  return response;
-}
-
-export async function remove(env, path) {
-  const cfg = getStorageConfig(env);
-  if (cfg.driver !== 'webdav') throw new Error(`Unsupported storage driver: ${cfg.driver}`);
-  const { init, cancel } = withTimeout({ method: 'DELETE', headers: { Authorization: authFor(cfg.webdav) } }, cfg.requestTimeoutMs);
-  const response = await fetch(urlFor(cfg.webdav, path), init);
-  cancel();
-  return response;
-}
-
-export async function move(env, from, to) {
-  const cfg = getStorageConfig(env);
-  if (cfg.driver !== 'webdav') throw new Error(`Unsupported storage driver: ${cfg.driver}`);
-  const { init, cancel } = withTimeout(
-    {
-      method: 'MOVE',
-      headers: { Destination: urlFor(cfg.webdav, to), Overwrite: 'F', Authorization: authFor(cfg.webdav) },
-    },
-    cfg.requestTimeoutMs,
-  );
-  const response = await fetch(urlFor(cfg.webdav, from), init);
-  cancel();
-  return response;
-}
-
-export async function mkdir(env, path) {
-  const cfg = getStorageConfig(env);
-  if (cfg.driver !== 'webdav') throw new Error(`Unsupported storage driver: ${cfg.driver}`);
-  const { init, cancel } = withTimeout({ method: 'MKCOL', headers: { Authorization: authFor(cfg.webdav) } }, cfg.requestTimeoutMs);
-  const response = await fetch(urlFor(cfg.webdav, path), init);
-  cancel();
-  return response;
+  return {
+    ok: response.ok || response.status === 206,
+    status: response.status,
+    headers: buildPassthroughHeaders(response),
+    body: response.body,
+  };
 }

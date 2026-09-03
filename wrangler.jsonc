@@ -1,16 +1,7 @@
 {
   "name": "hoshiumi-drive",
   "compatibility_date": "2026-09-03",
-  // Astro 构建产物目录。Functions 在 dist/functions/ 下（由 scripts/postbuild.mjs 复制）。
-  "pages_build_output_dir": "./dist",
-  "d1_databases": [
-    { "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "014c77e4-b73d-438d-a112-4bf8b3781733" }
-  ],
-  // 公开可提交的非敏感配置已迁到 config/storage.yaml，编译进
-  // functions/_config.generated.json。敏感字段（DRIVE_MASTER_KEY、
-  // WEBDAV_USERNAME / WEBDAV_PASSWORD）请通过 .dev.vars（本地）或
-  // `wrangler pages secret put`（生产）注入。
-  //
-  // 注意：本文件同时被本地 dev 与 Pages 部署读取，只能包含 Pages 模式支持的键
-  //（observability 等 Workers 专属键会让 `wrangler pages deploy` 校验失败）。
+  // Astro 构建产物目录。Functions 放在仓库根的 functions/，Cloudflare Pages
+  // （Git 集成 / wrangler pages deploy）会自动编译它；不要复制进 dist/。
+  "pages_build_output_dir": "./dist"
 }

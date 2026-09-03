@@ -1,20 +1,57 @@
 /**
- * Drive 前端逻辑（TypeScript）
+ * Drive 前端逻辑（只读版 · v0.3）
+ *
+ * 设计原则：
+ *   - 整个应用是 WebDAV 的「只读浏览器 + 客户端打包器」。
+ *   - 后端只做：列目录 / 单文件下载 / 预览 / 必要的元数据；不做任何写操作、不做 auth。
+ *   - 文件夹打包在浏览器里用 client-zip 流式完成；不需要服务端 zip。
  *
  * 行为：
- *   - 列表：GET /api/files?prefix=...
- *   - 上传：POST /api/files（multipart，XHR 上报进度）
- *   - 新建文件夹：POST /api/folder
- *   - 重命名（文件/文件夹）：PATCH /api/files
- *   - 删除（文件/文件夹）：DELETE /api/files
- *   - 登录/登出：POST /api/auth/{login,logout}
- *   - 预览：GET /api/preview?path=...
+ *   - 列表：GET /api/list?prefix=...
+ *   - 单文件下载：直接 <a href="/api/download?path=...">
+ *   - 预览：GET /api/preview?path=...（含 Range 透传，视频/音频可拖进度条）
+ *   - 文件夹打包：递归 list → 并发 fetch 每文件 → client-zip 流式打 zip → 浏览器落盘
+ *   - 增强预览：图片灯箱（同一目录左右切换）、代码高亮、Markdown 渲染、元数据
  *
  * 交互约定：
- *   - 文件夹：点行主区域进入；登录后可 重命名 / 删除
- *   - 文件：行主区域不触发预览，防误触；右侧 预览 / 下载（登录后再加 重命名 / 删除）
- *   - 所有操作都有 toast 反馈：进行中（带进度条）→ 成功 / 失败
+ *   - 文件夹：点行主区域进入；右侧 进入 / 打包
+ *   - 文件：行主区域不触发预览（防误触）；右侧 预览 / 下载
+ *   - 所有操作都有 toast 反馈：进行中 → 成功 / 失败
  */
+
+import { downloadZip } from 'client-zip';
+import { marked } from 'marked';
+import hljs from 'highlight.js/lib/core';
+import javascript from 'highlight.js/lib/languages/javascript';
+import typescript from 'highlight.js/lib/languages/typescript';
+import python from 'highlight.js/lib/languages/python';
+import xml from 'highlight.js/lib/languages/xml';
+import css from 'highlight.js/lib/languages/css';
+import json from 'highlight.js/lib/languages/json';
+import yaml from 'highlight.js/lib/languages/yaml';
+import bash from 'highlight.js/lib/languages/bash';
+import markdown from 'highlight.js/lib/languages/markdown';
+import rust from 'highlight.js/lib/languages/rust';
+import go from 'highlight.js/lib/languages/go';
+import sql from 'highlight.js/lib/languages/sql';
+import 'highlight.js/styles/atom-one-dark.css';
+
+hljs.registerLanguage('javascript', javascript);
+hljs.registerLanguage('typescript', typescript);
+hljs.registerLanguage('python', python);
+hljs.registerLanguage('xml', xml);
+hljs.registerLanguage('html', xml);
+hljs.registerLanguage('css', css);
+hljs.registerLanguage('json', json);
+hljs.registerLanguage('yaml', yaml);
+hljs.registerLanguage('bash', bash);
+hljs.registerLanguage('shell', bash);
+hljs.registerLanguage('markdown', markdown);
+hljs.registerLanguage('rust', rust);
+hljs.registerLanguage('go', go);
+hljs.registerLanguage('sql', sql);
+
+// ---------- 类型 ----------
 
 interface DriveItem {
   key: string;
@@ -30,11 +67,21 @@ interface DriveListResponse {
   files: DriveItem[];
 }
 
-interface SessionResponse {
-  authenticated: boolean;
+type PreviewKind = 'image' | 'pdf' | 'audio' | 'video' | 'code' | 'markdown' | 'text' | 'unknown';
+
+interface PreviewState {
+  key: string;
+  name: string;
+  kind: PreviewKind;
+  mime: string;
+  size?: number;
+  uploaded?: string;
+  // 图片灯箱上下文：同目录下其他图片
+  gallery?: { keys: string[]; names: string[]; index: number };
 }
 
 // ---------- 图标 ----------
+
 const ICON_FOLDER =
   '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 6.5A2.5 2.5 0 0 1 5.5 4h4l2 2h7A2.5 2.5 0 0 1 21 8.5v9A2.5 2.5 0 0 1 18.5 20h-13A2.5 2.5 0 0 1 3 17.5v-11Z"/></svg>';
 const ICON_FILE_DEFAULT =
@@ -57,100 +104,87 @@ const ICON_CHECK =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 const ICON_X =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>';
-const ICON_UPLOAD =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>';
-const ICON_FOLDER_PLUS =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 11v6M9 14h6"/></svg>';
 const ICON_EYE =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/></svg>';
 const ICON_DOWNLOAD =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v12M6 12l6 6 6-6"/></svg>';
-const ICON_PENCIL =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z"/></svg>';
-const ICON_TRASH =
-  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>';
 const ICON_PACK =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg>';
 
+const ICON_EXT_KIND: Record<string, string> = {
+  image: ICON_FILE_IMAGE,
+  video: ICON_FILE_VIDEO,
+  audio: ICON_FILE_AUDIO,
+  pdf: ICON_FILE_PDF,
+  archive: ICON_FILE_ARCHIVE,
+  text: ICON_FILE_TEXT,
+  code: ICON_FILE_CODE,
+};
+const CODE_EXTS = new Set([
+  'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx',
+  'css', 'scss', 'less',
+  'html', 'htm', 'xml', 'vue', 'svelte',
+  'py', 'rb', 'rs', 'go', 'java', 'kt', 'swift',
+  'c', 'cc', 'cpp', 'h', 'hpp', 'm', 'mm',
+  'php', 'sh', 'bash', 'zsh', 'ps1', 'sql', 'lua', 'r', 'dart', 'toml', 'yaml', 'yml',
+  'json', 'jsonc', 'json5',
+]);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic', 'ico']);
+const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'flac', 'ogg', 'm4a', 'opus', 'aac']);
+const ARCHIVE_EXTS = new Set(['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz']);
+const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst']);
+
 /** 根据文件名返回图标 svg */
 function fileIcon(name: string): string {
-  const ext = (name.split('.').pop() ?? '').toLowerCase();
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic'].includes(ext)) return ICON_FILE_IMAGE;
-  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'].includes(ext)) return ICON_FILE_VIDEO;
-  if (['mp3', 'wav', 'flac', 'ogg', 'm4a', 'opus', 'aac'].includes(ext)) return ICON_FILE_AUDIO;
-  if (ext === 'pdf') return ICON_FILE_PDF;
-  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'].includes(ext)) return ICON_FILE_ARCHIVE;
-  if (
-    [
-      'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'json', 'jsonc', 'json5',
-      'css', 'scss', 'less', 'html', 'htm', 'xml', 'vue', 'svelte',
-      'py', 'rb', 'rs', 'go', 'java', 'kt', 'swift', 'c', 'cc', 'cpp', 'h', 'hpp', 'm', 'mm',
-      'php', 'sh', 'bash', 'zsh', 'ps1', 'sql', 'lua', 'r', 'dart', 'toml', 'yaml', 'yml',
-    ].includes(ext)
-  ) {
-    return ICON_FILE_CODE;
-  }
-  if (['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst'].includes(ext)) return ICON_FILE_TEXT;
-  return ICON_FILE_DEFAULT;
+  const kind = fileKind(name);
+  return ICON_EXT_KIND[kind] ?? ICON_FILE_DEFAULT;
 }
 
-/** 文件图标的类型（用来染色） */
-function fileKind(name: string): string {
+/** 文件类型（决定图标染色 + 预览分支） */
+function fileKind(name: string): 'image' | 'video' | 'audio' | 'pdf' | 'code' | 'archive' | 'text' | 'file' {
   const ext = (name.split('.').pop() ?? '').toLowerCase();
-  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'svg', 'avif', 'heic'].includes(ext)) return 'image';
-  if (['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v'].includes(ext)) return 'video';
-  if (['mp3', 'wav', 'flac', 'ogg', 'm4a', 'opus', 'aac'].includes(ext)) return 'audio';
+  if (IMAGE_EXTS.has(ext)) return 'image';
+  if (VIDEO_EXTS.has(ext)) return 'video';
+  if (AUDIO_EXTS.has(ext)) return 'audio';
   if (ext === 'pdf') return 'pdf';
-  if (['zip', 'rar', '7z', 'tar', 'gz', 'bz2', 'xz', 'tgz'].includes(ext)) return 'archive';
-  if (['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst'].includes(ext)) return 'text';
+  if (ARCHIVE_EXTS.has(ext)) return 'archive';
+  if (CODE_EXTS.has(ext)) return 'code';
+  if (TEXT_EXTS.has(ext)) return 'text';
   return 'file';
 }
 
+function extOf(name: string): string {
+  return (name.split('.').pop() ?? '').toLowerCase();
+}
+
+// ---------- 状态 ----------
+
 const root = document.documentElement;
 let prefix = '';
-let authenticated = false;
+let lastList: DriveListResponse | null = null;
+let previewState: PreviewState | null = null;
 
 const $ = <T extends Element>(sel: string) => root.querySelector(sel) as T | null;
 
 const refs = {
-  modeReadonly: $('[data-account-readonly]') as HTMLElement,
-  modeAuth: $('[data-account-auth]') as HTMLElement,
-  login: $('[data-login]') as HTMLButtonElement,
-  logout: $('[data-logout]') as HTMLButtonElement,
-  tools: $('[data-tools]') as HTMLElement,
   crumb: $('[data-crumb]') as HTMLElement,
   up: $('[data-up]') as HTMLButtonElement,
   list: $('[data-list]') as HTMLElement,
   notice: $('[data-notice]') as HTMLElement,
-  upload: $('#upload') as HTMLInputElement,
-  newFolderBtn: $('[data-new-folder]') as HTMLButtonElement,
   rowTpl: $('[data-row-template]') as HTMLTemplateElement,
   toasts: $('[data-toasts]') as HTMLElement,
-  loginDialog: $('[data-login-dialog]') as HTMLDialogElement,
-  loginForm: $('[data-login-form]') as HTMLFormElement,
-  loginKey: $('[data-key]') as HTMLInputElement,
-  loginCancel: $('[data-cancel]') as HTMLButtonElement,
-  promptDialog: $('[data-prompt-dialog]') as HTMLDialogElement,
-  promptForm: $('[data-prompt-form]') as HTMLFormElement,
-  promptTitle: $('[data-prompt-title]') as HTMLElement,
-  promptLabel: $('[data-prompt-label]') as HTMLElement,
-  promptInput: $('[data-prompt-input]') as HTMLInputElement,
-  promptHint: $('[data-prompt-hint]') as HTMLElement,
-  promptCancel: $('[data-prompt-cancel]') as HTMLButtonElement,
-  promptConfirm: $('[data-prompt-confirm]') as HTMLButtonElement,
-  confirmDialog: $('[data-confirm-dialog]') as HTMLDialogElement,
-  confirmForm: $('[data-confirm-form]') as HTMLFormElement,
-  confirmTitle: $('[data-confirm-title]') as HTMLElement,
-  confirmBody: $('[data-confirm-body]') as HTMLElement,
-  confirmCancel: $('[data-confirm-cancel]') as HTMLButtonElement,
-  confirmOk: $('[data-confirm-ok]') as HTMLButtonElement,
   preview: $('[data-preview]') as HTMLDialogElement,
   previewName: $('[data-preview-name]') as HTMLElement,
   previewBody: $('[data-preview-body]') as HTMLElement,
   previewNote: $('[data-preview-note]') as HTMLElement,
   previewDownload: $('[data-preview-download]') as HTMLAnchorElement,
   previewClose: $('[data-preview-close]') as HTMLButtonElement,
+  previewPrev: $('[data-preview-prev]') as HTMLButtonElement,
+  previewNext: $('[data-preview-next]') as HTMLButtonElement,
 };
+
+// ---------- 工具 ----------
 
 function escapeHtml(value: string): string {
   const el = document.createElement('span');
@@ -158,10 +192,59 @@ function escapeHtml(value: string): string {
   return el.innerHTML;
 }
 
+function readError(e: unknown): string {
+  return e instanceof Error ? e.message : String(e);
+}
+
+function formatSize(size?: number): string {
+  if (!size) return '—';
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
+  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
+  return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+
+function formatDate(input?: string): string {
+  if (!input) return '';
+  const d = new Date(input);
+  if (Number.isNaN(d.getTime())) return input;
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${y}-${m}-${day} ${hh}:${mm}`;
+}
+
+function fileMetaLine(item: DriveItem): string {
+  if (item.folder) return '文件夹';
+  const size = formatSize(item.size);
+  const date = formatDate(item.uploaded);
+  return date ? `${size} · ${date}` : size;
+}
+
+function previewMetaLine(state: PreviewState): string {
+  const parts: string[] = [];
+  parts.push(formatSize(state.size));
+  if (state.uploaded) parts.push(formatDate(state.uploaded));
+  if (state.gallery) {
+    const { index, keys } = state.gallery;
+    parts.push(`${index + 1} / ${keys.length}`);
+  }
+  return parts.join(' · ');
+}
+
+async function api<T>(url: string): Promise<T> {
+  const response = await fetch(url);
+  const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : ({} as T);
+  if (!response.ok) throw new Error((data as { error?: string }).error || '请求失败');
+  return data;
+}
+
 // ---------- toast ----------
 
 interface ToastHandle {
-  setProgress: (pct: number | null) => void; // null = indeterminate
+  setProgress: (pct: number | null) => void;
   setDetail: (text: string) => void;
   done: (tone: 'success' | 'error', detail?: string) => void;
   close: () => void;
@@ -175,7 +258,7 @@ function toast(title: string, detail?: string): ToastHandle {
 
   const icon = document.createElement('span');
   icon.className = 'drive-toast__icon';
-  icon.innerHTML = ICON_UPLOAD;
+  icon.innerHTML = ICON_PACK;
 
   const body = document.createElement('div');
   body.className = 'drive-toast__body';
@@ -218,7 +301,7 @@ function toast(title: string, detail?: string): ToastHandle {
 
   closeBtn.addEventListener('click', dismiss);
 
-  const api: ToastHandle = {
+  return {
     setProgress(pct) {
       if (progressWrap.parentElement !== body) body.appendChild(progressWrap);
       if (pct === null) {
@@ -244,9 +327,6 @@ function toast(title: string, detail?: string): ToastHandle {
       dismiss();
     },
   };
-
-  // 进行中的 toast 不自动消失；设置成功后会自动排程关闭
-  return api;
 }
 
 function toastSuccess(title: string, detail?: string) {
@@ -254,216 +334,206 @@ function toastSuccess(title: string, detail?: string) {
   t.done('success');
 }
 
-function toastError(title: string, detail?: string) {
-  const t = toast(title, detail);
-  t.done('error');
-}
-
-// ---------- dialog 辅助 ----------
-
-function openPrompt(opts: { title: string; label: string; initial?: string; hint?: string; confirmText?: string }): Promise<string | null> {
-  return new Promise((resolve) => {
-    refs.promptTitle.textContent = opts.title;
-    refs.promptLabel.textContent = opts.label;
-    refs.promptInput.value = opts.initial ?? '';
-    refs.promptHint.textContent = opts.hint ?? '';
-    refs.promptConfirm.textContent = opts.confirmText ?? '确认';
-    let settled = false;
-    const cleanup = () => {
-      refs.promptForm.removeEventListener('submit', onSubmit);
-      refs.promptCancel.removeEventListener('click', onCancel);
-      refs.promptDialog.removeEventListener('close', onClose);
-    };
-    const finish = (value: string | null) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      refs.promptDialog.close();
-      resolve(value);
-    };
-    const onSubmit = (e: Event) => {
-      e.preventDefault();
-      const v = refs.promptInput.value.trim();
-      if (!v) return;
-      finish(v);
-    };
-    const onCancel = () => finish(null);
-    const onClose = () => { if (!settled) finish(null); };
-    refs.promptForm.addEventListener('submit', onSubmit);
-    refs.promptCancel.addEventListener('click', onCancel);
-    refs.promptDialog.addEventListener('close', onClose);
-    refs.promptDialog.showModal();
-    refs.promptInput.focus();
-    refs.promptInput.select();
-  });
-}
-
-function openConfirm(opts: { title: string; body: string; okText?: string }): Promise<boolean> {
-  return new Promise((resolve) => {
-    refs.confirmTitle.textContent = opts.title;
-    refs.confirmBody.textContent = opts.body;
-    refs.confirmOk.textContent = opts.okText ?? '确认';
-    let settled = false;
-    const cleanup = () => {
-      refs.confirmForm.removeEventListener('submit', onSubmit);
-      refs.confirmCancel.removeEventListener('click', onCancel);
-      refs.confirmDialog.removeEventListener('close', onClose);
-    };
-    const finish = (v: boolean) => {
-      if (settled) return;
-      settled = true;
-      cleanup();
-      refs.confirmDialog.close();
-      resolve(v);
-    };
-    const onSubmit = (e: Event) => { e.preventDefault(); finish(true); };
-    const onCancel = () => finish(false);
-    const onClose = () => { if (!settled) finish(false); };
-    refs.confirmForm.addEventListener('submit', onSubmit);
-    refs.confirmCancel.addEventListener('click', onCancel);
-    refs.confirmDialog.addEventListener('close', onClose);
-    refs.confirmDialog.showModal();
-    refs.confirmOk.focus();
-  });
-}
-
-// ---------- API ----------
-
-async function api<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
-  const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : ({} as T);
-  if (!response.ok) throw new Error((data as { error?: string }).error || '请求失败');
-  return data;
-}
-
-function readError(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
-}
-
-/** 带进度的 multipart 上传（XHR） */
-function uploadWithProgress(path: string, file: File, onProgress: (pct: number) => void): Promise<{ ok: boolean; status: number }> {
-  return new Promise((resolve, reject) => {
-    const form = new FormData();
-    form.append('path', path);
-    form.append('file', file);
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/files');
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable) onProgress((e.loaded / e.total) * 100);
-    };
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) resolve({ ok: true, status: xhr.status });
-      else {
-        let msg = `上传失败 (HTTP ${xhr.status})`;
-        try {
-          const d = JSON.parse(xhr.responseText);
-          if (d?.error) msg = d.error;
-        } catch { /* ignore */ }
-        reject(new Error(msg));
-      }
-    };
-    xhr.onerror = () => reject(new Error('网络错误，上传中断'));
-    xhr.send(form);
-  });
-}
-
 // ---------- 预览 ----------
 
-function renderPreview(mime: string, blobUrl: string, fileName: string): { note?: string; tone?: 'info' | 'warn' } {
-  const body = refs.previewBody;
-  body.innerHTML = '';
+function classifyPreview(mime: string, name: string): PreviewKind {
   const m = (mime || '').toLowerCase();
-  if (m.startsWith('image/')) {
-    const img = document.createElement('img');
-    img.alt = fileName;
-    img.src = blobUrl;
-    body.appendChild(img);
-    return {};
-  }
-  if (m === 'application/pdf') {
-    const iframe = document.createElement('iframe');
-    iframe.src = blobUrl;
-    iframe.title = fileName;
-    body.appendChild(iframe);
-    return {};
-  }
-  if (m.startsWith('audio/')) {
-    const audio = document.createElement('audio');
-    audio.controls = true;
-    audio.src = blobUrl;
-    body.appendChild(audio);
-    return {};
-  }
-  if (m.startsWith('video/')) {
-    const video = document.createElement('video');
-    video.controls = true;
-    video.src = blobUrl;
-    body.appendChild(video);
-    return {};
-  }
-  if (
-    m.startsWith('text/') ||
-    m === 'application/json' ||
-    m === 'application/xml' ||
-    m === 'application/javascript' ||
-    m === 'application/x-yaml' ||
-    m === 'application/ld+json' ||
-    m === 'application/markdown' ||
-    m === 'image/svg+xml'
-  ) {
-    body.innerHTML = '<p class="drive-preview__placeholder">正在读取文本…</p>';
-    fetch(blobUrl)
-      .then((r) => r.text())
-      .then((text) => {
-        const pre = document.createElement('pre');
-        const code = document.createElement('code');
-        code.textContent = text;
-        pre.appendChild(code);
-        body.replaceChildren(pre);
-      })
-      .catch((e) => {
-        body.innerHTML = `<p class="drive-preview__placeholder">读取失败：${escapeHtml(readError(e))}</p>`;
-      });
-    return { note: '文本预览，仅显示前 256 KB' };
-  }
-  body.innerHTML = '<p class="drive-preview__placeholder">该文件类型暂不支持在线预览，请点击右上角「下载」。</p>';
-  return { note: '无法内联预览', tone: 'warn' };
+  if (m.startsWith('image/')) return 'image';
+  if (m === 'application/pdf') return 'pdf';
+  if (m.startsWith('audio/')) return 'audio';
+  if (m.startsWith('video/')) return 'video';
+  const ext = extOf(name);
+  if (['md', 'markdown'].includes(ext)) return 'markdown';
+  if (CODE_EXTS.has(ext)) return 'code';
+  if (m.startsWith('text/') || m === 'application/json' || m === 'application/xml' || m === 'application/javascript' || m === 'application/x-yaml' || m === 'application/ld+json') return 'text';
+  return 'unknown';
 }
 
-async function openPreview(key: string, name: string) {
-  refs.previewName.textContent = name;
-  refs.previewNote.textContent = '';
-  refs.previewNote.removeAttribute('data-tone');
-  refs.previewDownload.href = `/api/download?path=${encodeURIComponent(key)}`;
+function languageFor(name: string): string | null {
+  const map: Record<string, string> = {
+    js: 'javascript', mjs: 'javascript', cjs: 'javascript', jsx: 'javascript',
+    ts: 'typescript', tsx: 'typescript',
+    py: 'python',
+    html: 'xml', htm: 'xml', xml: 'xml', vue: 'xml', svelte: 'xml',
+    css: 'css', scss: 'css', less: 'css',
+    json: 'json', jsonc: 'json', json5: 'json',
+    yaml: 'yaml', yml: 'yaml',
+    sh: 'bash', bash: 'bash', zsh: 'bash',
+    md: 'markdown', markdown: 'markdown',
+    rs: 'rust',
+    go: 'go',
+    sql: 'sql',
+  };
+  return map[extOf(name)] ?? null;
+}
+
+function setPreviewNote(text: string, tone?: 'info' | 'warn') {
+  refs.previewNote.textContent = text;
+  if (tone) refs.previewNote.dataset.tone = tone;
+  else refs.previewNote.removeAttribute('data-tone');
+}
+
+function setGalleryNav(visible: boolean) {
+  refs.previewPrev.hidden = !visible;
+  refs.previewNext.hidden = !visible;
+}
+
+function renderMediaPreview(state: PreviewState, url: string) {
+  const body = refs.previewBody;
+  body.innerHTML = '';
+  if (state.kind === 'image') {
+    const img = document.createElement('img');
+    img.alt = state.name;
+    img.src = url;
+    body.appendChild(img);
+    return;
+  }
+  if (state.kind === 'pdf') {
+    const iframe = document.createElement('iframe');
+    iframe.src = url;
+    iframe.title = state.name;
+    body.appendChild(iframe);
+    return;
+  }
+  if (state.kind === 'audio') {
+    const audio = document.createElement('audio');
+    audio.controls = true;
+    audio.preload = 'metadata';
+    audio.src = url;
+    body.appendChild(audio);
+    return;
+  }
+  if (state.kind === 'video') {
+    const video = document.createElement('video');
+    video.controls = true;
+    video.preload = 'metadata';
+    video.src = url;
+    body.appendChild(video);
+    return;
+  }
+}
+
+async function renderTextPreview(state: PreviewState, text: string) {
+  const body = refs.previewBody;
+  body.innerHTML = '';
+  if (state.kind === 'markdown') {
+    const wrap = document.createElement('article');
+    wrap.className = 'drive-preview__markdown';
+    wrap.innerHTML = marked.parse(text) as string;
+    body.appendChild(wrap);
+    return;
+  }
+  if (state.kind === 'code') {
+    const pre = document.createElement('pre');
+    const code = document.createElement('code');
+    const lang = languageFor(state.name);
+    try {
+      if (lang) {
+        const out = hljs.highlight(text, { language: lang, ignoreIllegals: true });
+        code.innerHTML = out.value;
+        code.className = `language-${lang} hljs`;
+      } else {
+        const out = hljs.highlightAuto(text);
+        code.innerHTML = out.value;
+        code.className = 'hljs';
+      }
+    } catch {
+      code.textContent = text;
+    }
+    pre.appendChild(code);
+    body.appendChild(pre);
+    return;
+  }
+  // 纯文本
+  const pre = document.createElement('pre');
+  const code = document.createElement('code');
+  code.textContent = text;
+  pre.appendChild(code);
+  body.appendChild(pre);
+}
+
+function showPreviewError(message: string) {
+  refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">${escapeHtml(message)}</p>`;
+  setPreviewNote('请改用下载', 'warn');
+}
+
+async function openPreview(state: PreviewState) {
+  previewState = state;
+  refs.previewName.textContent = state.name;
+  setPreviewNote(previewMetaLine(state));
+  refs.previewDownload.href = `/api/download?path=${encodeURIComponent(state.key)}`;
+  setGalleryNav(Boolean(state.gallery));
   refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">载入中…</p>';
-  refs.preview.showModal();
+  if (!refs.preview.open) refs.preview.showModal();
+
+  const url = `/api/preview?path=${encodeURIComponent(state.key)}`;
+  // 媒体类直接走 URL，浏览器自己会处理 Range（视频/音频拖进度条）
+  if (state.kind === 'image' || state.kind === 'pdf' || state.kind === 'audio' || state.kind === 'video') {
+    try {
+      // 触发一次 HEAD-style 检查：通过 Range: bytes=0-0 探测是否可访问
+      const probe = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+      if (!probe.ok && probe.status !== 206) {
+        showPreviewError(`预览失败：HTTP ${probe.status}`);
+        return;
+      }
+      renderMediaPreview(state, url);
+    } catch (err) {
+      showPreviewError(`请求失败：${escapeHtml(readError(err))}`);
+    }
+    return;
+  }
+  // 文本类需要拿到内容
   try {
-    const res = await fetch(`/api/preview?path=${encodeURIComponent(key)}`);
+    const res = await fetch(url);
     if (!res.ok) {
-      refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">预览失败：HTTP ${res.status}</p>`;
-      refs.previewNote.textContent = '请改用下载';
-      refs.previewNote.dataset.tone = 'warn';
+      showPreviewError(`预览失败：HTTP ${res.status}`);
       return;
     }
-    const mime = res.headers.get('content-type') || 'application/octet-stream';
-    const blob = await res.blob();
-    const blobUrl = URL.createObjectURL(blob);
-    refs.preview.addEventListener('close', () => URL.revokeObjectURL(blobUrl), { once: true });
-    const meta = renderPreview(mime, blobUrl, name);
-    if (meta.note) {
-      refs.previewNote.textContent = meta.note;
-      if (meta.tone) refs.previewNote.dataset.tone = meta.tone;
+    const text = await res.text();
+    if (state.kind === 'markdown') {
+      setPreviewNote(previewMetaLine(state) + ' · Markdown 渲染');
+    } else if (state.kind === 'code') {
+      const lang = languageFor(state.name);
+      setPreviewNote(previewMetaLine(state) + (lang ? ` · ${lang}` : ' · 自动识别语言'));
+    } else {
+      setPreviewNote(previewMetaLine(state) + ' · 文本预览（最多 256 KB）');
     }
+    await renderTextPreview(state, text);
   } catch (err) {
-    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">请求失败：${escapeHtml(readError(err))}</p>`;
-    refs.previewNote.textContent = '请检查网络后重试';
-    refs.previewNote.dataset.tone = 'warn';
+    showPreviewError(`请求失败：${escapeHtml(readError(err))}`);
   }
+}
+
+function navigateGallery(delta: -1 | 1) {
+  const state = previewState;
+  if (!state?.gallery) return;
+  const { keys, names } = state.gallery;
+  const nextIndex = (state.gallery.index + delta + keys.length) % keys.length;
+  const nextKey = keys[nextIndex];
+  const nextName = names[nextIndex];
+  const next: PreviewState = {
+    ...state,
+    key: nextKey,
+    name: nextName,
+    gallery: { ...state.gallery, index: nextIndex },
+  };
+  void openPreview(next);
 }
 
 // ---------- 列表行 ----------
 
-function makeActionButton(icon: string, label: string, handler: () => void, variant: 'default' | 'danger' = 'default'): HTMLButtonElement {
+function makeLinkAction(icon: string, label: string, href: string, download: boolean): HTMLAnchorElement {
+  const a = document.createElement('a');
+  a.href = href;
+  a.className = 'drive-row__action';
+  a.title = label;
+  a.setAttribute('aria-label', label);
+  if (download) a.setAttribute('download', '');
+  a.innerHTML = `${icon}<span>${label}</span>`;
+  return a;
+}
+
+function makeButtonAction(icon: string, label: string, handler: () => void, variant: 'default' | 'danger' = 'default'): HTMLButtonElement {
   const btn = document.createElement('button');
   btn.type = 'button';
   btn.className = 'drive-row__action' + (variant === 'danger' ? ' drive-row__action--danger' : '');
@@ -491,51 +561,49 @@ function makeRow(item: DriveItem): HTMLElement {
     iconWrap.dataset.kind = fileKind(name);
   }
   (tpl.querySelector('[data-name]') as HTMLElement).textContent = name;
-  (tpl.querySelector('[data-meta]') as HTMLElement).textContent = item.folder ? '文件夹' : formatSize(item.size);
+  (tpl.querySelector('[data-meta]') as HTMLElement).textContent = fileMetaLine(item);
 
   const main = tpl.querySelector('[data-row-main]') as HTMLButtonElement;
   const actions = tpl.querySelector('[data-actions]') as HTMLElement;
 
   if (item.folder) {
-    // 文件夹：主区域进入
+    // 文件夹：主区域进入；右侧 进入 / 打包
     main.addEventListener('click', () => open(item.key));
-    // 打包下载（无需登录）
-    const zipLink = document.createElement('a');
-    zipLink.href = `/api/archive?path=${encodeURIComponent(item.key)}`;
-    zipLink.className = 'drive-row__action';
-    zipLink.title = '打包下载';
-    zipLink.setAttribute('aria-label', '打包下载');
-    zipLink.innerHTML = `${ICON_PACK}<span>打包</span>`;
-    actions.appendChild(zipLink);
-    // 登录后：重命名 / 删除（DELETE /api/files?path=xxx 对目录同样有效）
-    if (authenticated) {
-      actions.appendChild(makeActionButton(ICON_PENCIL, '重命名', () => renameItem(item.key, item.name)));
-      actions.appendChild(makeActionButton(ICON_TRASH, '删除', () => removeItem(item.key, item.name), 'danger'));
-    }
+    actions.appendChild(makeButtonAction(ICON_PACK, '打包', () => void packFolder(item.key, name)));
   } else {
-    // 文件：主区域不触发预览（防误触）
-    actions.appendChild(makeActionButton(ICON_EYE, '预览', () => openPreview(item.key, name)));
-    const downloadLink = document.createElement('a');
-    downloadLink.href = `/api/download?path=${encodeURIComponent(item.key)}`;
-    downloadLink.className = 'drive-row__action';
-    downloadLink.title = '下载';
-    downloadLink.setAttribute('aria-label', '下载');
-    downloadLink.innerHTML = `${ICON_DOWNLOAD}<span>下载</span>`;
-    actions.appendChild(downloadLink);
-    if (authenticated) {
-      actions.appendChild(makeActionButton(ICON_PENCIL, '重命名', () => renameItem(item.key, item.name)));
-      actions.appendChild(makeActionButton(ICON_TRASH, '删除', () => removeItem(item.key, item.name), 'danger'));
-    }
+    // 文件：主区域不触发预览（防误触）；右侧 预览 / 下载
+    const kind = fileKind(name);
+    actions.appendChild(
+      makeButtonAction(ICON_EYE, '预览', () =>
+        openPreview({
+          key: item.key,
+          name,
+          kind: classifyPreview('', name),
+          mime: '',
+          size: item.size,
+          uploaded: item.uploaded,
+          // 图片构建灯箱上下文
+          gallery: kind === 'image' && lastList ? buildImageGallery(item.key) : undefined,
+        }),
+      ),
+    );
+    actions.appendChild(
+      makeLinkAction(ICON_DOWNLOAD, '下载', `/api/download?path=${encodeURIComponent(item.key)}`, true),
+    );
   }
   return tpl;
 }
 
-function formatSize(size?: number): string {
-  if (!size) return '—';
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(0)} KB`;
-  if (size < 1024 * 1024 * 1024) return `${(size / 1024 / 1024).toFixed(1)} MB`;
-  return `${(size / 1024 / 1024 / 1024).toFixed(2)} GB`;
+function buildImageGallery(currentKey: string) {
+  if (!lastList) return undefined;
+  const images = lastList.files.filter((f) => fileKind(f.name) === 'image');
+  const index = images.findIndex((f) => f.key === currentKey);
+  if (index < 0 || images.length < 2) return undefined;
+  return {
+    keys: images.map((f) => f.key),
+    names: images.map((f) => f.name),
+    index,
+  };
 }
 
 function render(data: DriveListResponse) {
@@ -555,7 +623,8 @@ function render(data: DriveListResponse) {
 
 async function load() {
   try {
-    const data = await api<DriveListResponse>(`/api/files?prefix=${encodeURIComponent(prefix)}`);
+    const data = await api<DriveListResponse>(`/api/list?prefix=${encodeURIComponent(prefix)}`);
+    lastList = data;
     render(data);
   } catch (error) {
     refs.list!.innerHTML = `<p class="drive-loading">载入失败：${escapeHtml(readError(error))}</p>`;
@@ -569,167 +638,106 @@ function open(key: string) {
   load();
 }
 
-// ---------- 操作 ----------
+// ---------- 客户端流式打包 ----------
 
-async function removeItem(key: string, name: string) {
-  const isFolder = key.endsWith('/');
-  const ok = await openConfirm({
-    title: isFolder ? '删除文件夹' : '删除文件',
-    body: isFolder
-      ? `确定要删除文件夹「${name}」吗？文件夹内的所有内容也会一并删除，此操作不可撤销。`
-      : `确定要删除「${name}」吗？此操作不可撤销。`,
-    okText: '删除',
-  });
-  if (!ok) return;
-  const t = toast(`正在删除「${name}」…`);
-  try {
-    await api(`/api/files?path=${encodeURIComponent(key)}`, { method: 'DELETE' });
-    t.done('success', '已删除');
-    load();
-  } catch (error) {
-    t.done('error', readError(error));
-  }
-}
-
-async function renameItem(key: string, name: string) {
-  const isFolder = key.endsWith('/');
-  const newName = await openPrompt({
-    title: isFolder ? '重命名文件夹' : '重命名文件',
-    label: '新名称',
-    initial: name,
-    hint: '不能包含 / 与 \\',
-    confirmText: '保存',
-  });
-  if (!newName || newName === name) return;
-  if (newName.includes('/') || newName.includes('\\')) {
-    toastError('名称不合法', '不能包含 / 与 \\');
-    return;
-  }
-  const parent = key.split('/').slice(0, -1).join('/');
-  const sep = key.includes('/') ? '/' : '';
-  const destination = `${parent}${sep}${newName}${isFolder ? '/' : ''}`;
-  const t = toast(`正在重命名「${name}」…`);
-  try {
-    await api('/api/files', {
-      method: 'PATCH',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ from: key, to: destination }),
-    });
-    t.done('success', `已重命名为「${newName}」`);
-    load();
-  } catch (error) {
-    t.done('error', readError(error));
-  }
-}
-
-async function newFolder() {
-  const name = await openPrompt({
-    title: '新建文件夹',
-    label: '文件夹名',
-    hint: '不能为空，不允许 / 与 \\',
-    confirmText: '创建',
-  });
-  if (!name) return;
-  if (name.includes('/') || name.includes('\\')) {
-    toastError('名称不合法', '不能包含 / 与 \\');
-    return;
-  }
-  const t = toast(`正在创建「${name}」…`);
-  try {
-    await api('/api/folder', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ path: `${prefix}${name}` }),
-    });
-    t.done('success', '文件夹已创建');
-    load();
-  } catch (error) {
-    t.done('error', readError(error));
-  }
-}
-
-async function uploadFiles(files: FileList) {
-  for (const file of Array.from(files)) {
-    const t = toast(`正在上传「${file.name}」…`, '0%');
-    t.setProgress(0);
-    try {
-      await uploadWithProgress(`${prefix}${file.name}`, file, (pct) => {
-        t.setProgress(pct);
-        t.setDetail(`${Math.round(pct)}% · ${formatSize(file.size)}`);
-      });
-      t.done('success', `已上传 ${formatSize(file.size)}`);
-    } catch (error) {
-      t.done('error', readError(error));
-      break;
+/** 递归列出某个目录下的所有文件，返回 [{ key, relPath }]（relPath 相对于根目录） */
+async function collectFiles(rootKey: string, onProgress?: (count: number) => void): Promise<{ key: string; relPath: string }[]> {
+  const out: { key: string; relPath: string }[] = [];
+  async function walk(prefix: string) {
+    const data = await api<DriveListResponse>(`/api/list?prefix=${encodeURIComponent(prefix)}`);
+    for (const f of data.folders) {
+      onProgress?.(out.length);
+      await walk(f.key);
+    }
+    for (const f of data.files) {
+      out.push({ key: f.key, relPath: f.key.slice(rootKey.length) });
+      onProgress?.(out.length);
     }
   }
-  refs.upload.value = '';
-  load();
+  await walk(rootKey);
+  return out;
 }
 
-// ---------- 登录状态 ----------
+async function packFolder(folderKey: string, folderName: string) {
+  if (!folderKey.endsWith('/')) folderKey = `${folderKey}/`;
+  const t = toast(`正在打包「${folderName}」…`, '正在收集文件…');
+  t.setProgress(null);
 
-function applyAuthState() {
-  refs.modeReadonly!.hidden = authenticated;
-  refs.modeAuth!.hidden = !authenticated;
-  refs.tools!.hidden = !authenticated;
-  load();
-}
-
-async function setup() {
+  let files: { key: string; relPath: string }[];
   try {
-    const session = await api<SessionResponse>('/api/auth/session');
-    authenticated = session.authenticated;
-  } catch {
-    authenticated = false;
+    files = await collectFiles(folderKey, (count) => t.setDetail(`已发现 ${count} 个文件`));
+  } catch (err) {
+    t.done('error', `收集失败：${readError(err)}`);
+    return;
   }
-  applyAuthState();
+  if (files.length === 0) {
+    t.done('error', '文件夹为空');
+    return;
+  }
+  t.setDetail(`共 ${files.length} 个文件，开始打包…`);
+
+  // 构造 client-zip 输入：异步 iterable 流式喂入。
+  // 先并发启动所有 fetch（不 await），再用 for-await 边 ready 边 yield。
+  // client-zip 会按 yield 顺序逐个读取 body stream，真正的流式打包。
+  const inflight = files.map((f) => {
+    const responsePromise = fetch(`/api/download?path=${encodeURIComponent(f.key)}`);
+    return { name: `${folderName}/${f.relPath}`, responsePromise };
+  });
+
+  async function* inputStream() {
+    for (const item of inflight) {
+      const res = await item.responsePromise;
+      if (!res.ok) throw new Error(`下载 ${item.name} 失败：HTTP ${res.status}`);
+      yield { name: item.name, input: res };
+    }
+  }
+
+  try {
+    // 下载到 Blob（个人量级够用；超大会爆内存，但用户已选「全客户端」模式）
+    const blob = await downloadZip(inputStream()).blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${folderName}.zip`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 0);
+    t.done('success', `已保存为 ${folderName}.zip · ${formatSize(blob.size)} · ${files.length} 个文件`);
+  } catch (err) {
+    t.done('error', `打包失败：${readError(err)}`);
+  }
 }
+
+// ---------- 事件绑定 ----------
 
 function bind() {
-  refs.login?.addEventListener('click', () => refs.loginDialog?.showModal());
-  refs.loginCancel?.addEventListener('click', () => refs.loginDialog?.close());
-  refs.loginForm?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    try {
-      await api('/api/auth/login', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ key: refs.loginKey.value }),
-      });
-      refs.loginDialog.close();
-      refs.loginKey.value = '';
-      toastSuccess('登录成功', '已获得编辑权限');
-      setup();
-    } catch (error) {
-      toastError('登录失败', readError(error));
-    }
-  });
-  refs.logout?.addEventListener('click', async () => {
-    try {
-      await api('/api/auth/logout', { method: 'POST' });
-      toastSuccess('已退出登录', '回到只读模式');
-    } catch (error) {
-      toastError('退出失败', readError(error));
-    }
-    setup();
-  });
   refs.up?.addEventListener('click', () => {
     prefix = prefix.replace(/[^/]+\/$/, '');
     load();
   });
-  refs.upload?.addEventListener('change', (event) => {
-    const files = (event.target as HTMLInputElement).files;
-    if (files && files.length) void uploadFiles(files);
-  });
-  refs.newFolderBtn?.addEventListener('click', () => void newFolder());
+
   refs.previewClose?.addEventListener('click', () => refs.preview?.close());
+  refs.previewPrev?.addEventListener('click', () => navigateGallery(-1));
+  refs.previewNext?.addEventListener('click', () => navigateGallery(1));
   refs.preview?.addEventListener('click', (e) => {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
     if (!inside) refs.preview.close();
   });
+
+  // 预览内键盘：图片灯箱 ←/→ 切换，Esc 关闭（Esc 由 dialog 原生处理）
+  refs.preview?.addEventListener('keydown', (e) => {
+    if (!previewState?.gallery) return;
+    if (e.key === 'ArrowLeft') {
+      e.preventDefault();
+      navigateGallery(-1);
+    } else if (e.key === 'ArrowRight') {
+      e.preventDefault();
+      navigateGallery(1);
+    }
+  });
 }
 
 bind();
-setup();
+load();
