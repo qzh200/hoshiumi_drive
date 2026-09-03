@@ -27,6 +27,21 @@ function xmlValue(xml, tag) {
   return xml.match(new RegExp(`<[^>]*${tag}[^>]*>([\\s\\S]*?)<\\/[^>]*${tag}>`, 'i'))?.[1]?.trim();
 }
 
+/**
+ * 提取 <resourcetype>...</resourcetype> 块的内容，
+ * 进一步判断里面是否含 <...collection...>。
+ *
+ * 不能用 `/<[^>]*collection\s*\/?\s*>/i` 这种形式直接扫整个 response 块：
+ * WebDAV 的真实 XML 是 `<D:collection xmlns:D="DAV:"/>`，里面的属性让 `>` 之前的
+ * 内容把 collection 跟下一个 `>` 隔开，简单的 `<...collection...>` 匹配不上。
+ * 这里先把 resourcetype 子树切出来，再判断子树里有没有 collection。
+ */
+function isCollection(item) {
+  const m = item.match(/<[^>]*resourcetype[^>]*>([\s\S]*?)<\s*\/\s*[^>]*resourcetype\s*>/i);
+  if (!m) return false;
+  return /<\s*[^>]*collection/i.test(m[1]);
+}
+
 function withTimeout(init, timeoutMs) {
   if (!timeoutMs) return init;
   const controller = new AbortController();
@@ -52,7 +67,7 @@ export async function list(env, prefix = '') {
     const key = decodeHref(cfg.webdav, xmlValue(item, 'href') || '');
     if (!key || key === prefix.replace(/\/$/, '')) continue;
     const name = key.split('/').pop();
-    const folder = /<[^>]*collection\s*\/?\s*>/i.test(item);
+    const folder = isCollection(item);
     const size = Number(xmlValue(item, 'getcontentlength') || 0);
     const uploaded = xmlValue(item, 'getlastmodified');
     (folder ? folders : files).push({ key: folder ? `${key}/` : key, name, folder, size, uploaded });

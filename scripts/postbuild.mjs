@@ -14,7 +14,7 @@
  * 调 Copy-Item -Recurse，更稳；脚本里所有动作幂等。
  */
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, existsSync, writeFileSync, statSync } from 'node:fs';
+import { mkdirSync, existsSync, writeFileSync, statSync, renameSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -46,6 +46,13 @@ function copyRecursive(src, dst) {
 }
 
 copyRecursive(functionsDir, targetFunctionsDir);
+
+// 把 public/legacy_archive 从 dist 里挪走——它只是开发期旧文件存档，不该进生产
+const legacyInDist = resolve(distDir, 'legacy_archive');
+if (existsSync(legacyInDist)) {
+  renameSync(legacyInDist, resolve(distDir, '_legacy_archive_removed'));
+  console.log('[postbuild] 把 dist/legacy_archive 移走（仅 dev 存档，不发布）');
+}
 
 // 简单 _headers
 const headersPath = resolve(distDir, '_headers');

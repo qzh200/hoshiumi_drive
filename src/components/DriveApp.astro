@@ -3,7 +3,7 @@ import type { SiteConfig } from '../config/schema.ts';
 import { getSiteConfig } from '../config/loader.ts';
 
 const config = getSiteConfig() as SiteConfig;
-const { header } = config;
+const { header, site } = config;
 const animated = config.animation.enabled && config.animation.entrance;
 ---
 
@@ -13,11 +13,28 @@ const animated = config.animation.enabled && config.animation.entrance;
       <p class="drive-header__eyebrow">{header.eyebrow}</p>
       <h1 class="drive-header__title">{header.title}</h1>
       <p class="drive-header__subtitle">{header.subtitle}</p>
+      {site.description && <p class="drive-header__desc">{site.description}</p>}
     </div>
-    <div class="drive-account">
-      <span class="drive-account__mode" data-mode>只读访问</span>
-      <button class="drive-btn drive-btn--primary" data-login type="button">密钥登录</button>
-      <button class="drive-btn drive-btn--ghost" data-logout type="button" hidden>退出</button>
+    <div class="drive-account" data-account-host>
+      <div class="drive-account__state" data-account-readonly>
+        <span class="drive-account__mode">
+          <svg class="drive-account__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7z" />
+            <circle cx="12" cy="12" r="3" />
+          </svg>
+          只读
+        </span>
+        <button class="drive-btn drive-btn--primary" data-login type="button">登录</button>
+      </div>
+      <div class="drive-account__state drive-account__state--auth" data-account-auth hidden>
+        <span class="drive-account__mode drive-account__mode--auth">
+          <svg class="drive-account__icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <path d="M20 6 9 17l-5-5" />
+          </svg>
+          可编辑
+        </span>
+        <button class="drive-btn drive-btn--ghost" data-logout type="button">退出</button>
+      </div>
     </div>
   </header>
 
@@ -29,11 +46,20 @@ const animated = config.animation.enabled && config.animation.entrance;
     </span>
     <div class="drive-toolbar__spacer"></div>
     <div class="drive-tools" data-tools hidden>
-      <label class="drive-btn drive-btn--primary drive-upload">
-        <span>上传文件</span>
+      <label class="drive-btn drive-btn--primary drive-upload" title="上传文件">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon">
+          <path d="M12 19V5M5 12l7-7 7 7" />
+        </svg>
+        <span>上传</span>
         <input id="upload" type="file" multiple />
       </label>
-      <button class="drive-btn" data-new-folder type="button">新建文件夹</button>
+      <button class="drive-btn" data-new-folder type="button" title="新建文件夹">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon">
+          <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z" />
+          <path d="M12 11v6M9 14h6" />
+        </svg>
+        <span>新建</span>
+      </button>
     </div>
   </nav>
 
@@ -44,6 +70,7 @@ const animated = config.animation.enabled && config.animation.entrance;
   </section>
 </main>
 
+<!-- 登录 dialog -->
 <dialog class="drive-dialog" data-login-dialog>
   <form class="drive-dialog__form" data-login-form>
     <h2 class="drive-dialog__title">密钥登录</h2>
@@ -59,13 +86,63 @@ const animated = config.animation.enabled && config.animation.entrance;
   </form>
 </dialog>
 
+<!-- 通用 prompt dialog（用于新建文件夹 / 重命名） -->
+<dialog class="drive-dialog" data-prompt-dialog>
+  <form class="drive-dialog__form" data-prompt-form>
+    <h2 class="drive-dialog__title" data-prompt-title>新建</h2>
+    <label class="drive-label" data-prompt-label-wrap>
+      <span data-prompt-label>名称</span>
+      <input class="drive-input" data-prompt-input autocomplete="off" required />
+    </label>
+    <p class="drive-dialog__hint" data-prompt-hint></p>
+    <div class="drive-dialog__actions">
+      <button class="drive-btn drive-btn--ghost" type="button" data-prompt-cancel>取消</button>
+      <button class="drive-btn drive-btn--primary" type="submit" data-prompt-confirm>确认</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 删除确认 dialog -->
+<dialog class="drive-dialog" data-confirm-dialog>
+  <form class="drive-dialog__form" data-confirm-form>
+    <h2 class="drive-dialog__title" data-confirm-title>确认删除</h2>
+    <p class="drive-dialog__body" data-confirm-body>此操作不可撤销。</p>
+    <div class="drive-dialog__actions">
+      <button class="drive-btn drive-btn--ghost" type="button" data-confirm-cancel>取消</button>
+      <button class="drive-btn drive-btn--danger" type="submit" data-confirm-ok>删除</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- 文件预览 dialog -->
+<dialog class="drive-preview" data-preview aria-label="文件预览">
+  <header class="drive-preview__bar">
+    <div class="drive-preview__title" data-preview-name>预览</div>
+    <div class="drive-preview__actions">
+      <a class="drive-btn drive-btn--ghost" data-preview-download href="#" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon">
+          <path d="M12 4v12M6 12l6 6 6-6M4 20h16" />
+        </svg>
+        <span>下载</span>
+      </a>
+      <button class="drive-btn drive-btn--primary" data-preview-close type="button">关闭</button>
+    </div>
+  </header>
+  <div class="drive-preview__body" data-preview-body>
+    <p class="drive-preview__placeholder">载入中…</p>
+  </div>
+  <p class="drive-preview__note" data-preview-note role="status"></p>
+</dialog>
+
 <template data-row-template>
   <article class="drive-row" data-row>
-    <span class="drive-row__icon" data-icon></span>
-    <div class="drive-row__body">
-      <span class="drive-row__name" data-name></span>
-      <span class="drive-row__meta" data-meta></span>
-    </div>
+    <button class="drive-row__main" type="button" data-row-main>
+      <span class="drive-row__icon" data-icon></span>
+      <div class="drive-row__body">
+        <span class="drive-row__name" data-name></span>
+        <span class="drive-row__meta" data-meta></span>
+      </div>
+    </button>
     <div class="drive-row__actions" data-actions></div>
   </article>
 </template>

@@ -5,17 +5,17 @@
   "type": "module",
   "scripts": {
     "config:build": "node ./scripts/build-storage-config.mjs",
-    "predev": "pnpm config:build",
+    "predev": "pnpm config:build && node -e \"if(!require('fs').existsSync('dist')){require('child_process').execSync('pnpm build',{stdio:'inherit'})}\"",
     "prebuild": "pnpm config:build",
-    "dev": "astro dev",
+    "postbuild": "node ./scripts/postbuild.mjs",
+    "dev": "wrangler pages dev dist --d1=DB --port 8788 --ip 127.0.0.1 --compatibility-date 2026-09-03",
+    "dev:astro": "astro dev",
     "build": "astro build && node ./scripts/postbuild.mjs",
     "preview": "astro preview",
-    "postbuild": "node ./scripts/postbuild.mjs",
     "check": "astro check",
-    "cf:dev": "wrangler pages dev dist --d1=DB",
-    "deploy": "pnpm build && wrangler pages deploy dist",
     "db:migrate:local": "wrangler d1 execute DB --local --file=migrations/0001_init.sql",
-    "db:migrate:remote": "wrangler d1 execute DB --remote --file=migrations/0001_init.sql"
+    "db:migrate:remote": "wrangler d1 execute DB --remote --file=migrations/0001_init.sql",
+    "deploy": "pnpm build && wrangler pages deploy dist"
   },
   "dependencies": {
     "astro": "^7.2.10",

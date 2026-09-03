@@ -83,6 +83,11 @@ html {
   -webkit-text-size-adjust: 100%;
 }
 
+/* hidden 属性必须真正生效：很多组件用了 display: flex/grid，会把 hidden 顶掉 */
+[hidden] {
+  display: none !important;
+}
+
 body {
   margin: 0;
   min-height: 100dvh;
@@ -366,6 +371,14 @@ button {
   color: var(--ink-soft);
 }
 
+.drive-header__desc {
+  margin: 14px 0 0;
+  font-size: 0.92rem;
+  line-height: 1.7;
+  color: var(--ink-soft);
+  max-width: 38em;
+}
+
 .drive-header__eyebrow {
   margin: 0;
   font-size: 11px;
@@ -382,10 +395,37 @@ button {
   flex-wrap: wrap;
 }
 
+.drive-account__state {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.drive-account__state--auth {
+  padding: 4px 6px 4px 12px;
+  border-radius: 999px;
+  border: 1px solid color-mix(in srgb, var(--color-primary) 30%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
 .drive-account__mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
   font-size: 0.85rem;
-  color: var(--ink-soft);
+  color: var(--ink-faint);
   letter-spacing: 0.05em;
+}
+
+.drive-account__mode--auth {
+  color: var(--color-primary);
+  font-weight: 600;
+}
+
+.drive-account__icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
 }
 
 /* ---- 7. 工具栏 / 面包屑 ---- */
@@ -395,6 +435,14 @@ button {
   gap: 12px;
   flex-wrap: wrap;
   padding: 20px 0 14px;
+}
+
+.drive-btn__icon {
+  width: 14px;
+  height: 14px;
+  display: inline-block;
+  vertical-align: -2px;
+  flex-shrink: 0;
 }
 
 .drive-crumb {
@@ -436,7 +484,7 @@ button {
   align-items: center;
   gap: 6px;
   padding: 8px 14px;
-  border-radius: 999px;
+  border-radius: 10px; /* 比 999px 更收敛；行内小动作另算 */
   border: 1px solid rgb(var(--line) / var(--card-border-opacity, 0.45));
   background: var(--card-fill);
   color: var(--ink);
@@ -455,6 +503,10 @@ button {
   transform: translateY(-1px);
   border-color: rgb(var(--line) / 0.7);
   background: var(--card-fill-hover);
+}
+
+.drive-btn:active:not(:disabled) {
+  transform: translateY(0);
 }
 
 .drive-btn:disabled {
@@ -500,13 +552,16 @@ button {
 
 .drive-input {
   padding: 9px 12px;
-  border-radius: 10px;
+  border-radius: 8px;
   border: 1px solid rgb(var(--line) / 0.45);
   background: var(--card-fill);
   backdrop-filter: blur(var(--card-blur, 16px));
   color: var(--ink);
   font: inherit;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
   transition: border-color 0.2s ease, box-shadow 0.2s ease;
 }
 
@@ -522,6 +577,8 @@ button {
   font-size: 0.85rem;
   color: var(--ink-soft);
   letter-spacing: 0.04em;
+  min-width: 0;
+  max-width: 100%;
 }
 
 .drive-upload {
@@ -566,33 +623,49 @@ button {
 }
 
 .drive-row {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 14px;
-  padding: 10px 12px;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  padding: 4px 8px;
   border-radius: 12px;
-  transition: background-color 0.2s ease, transform 0.2s ease;
+  transition: background-color 0.2s ease;
 }
 
 .drive-row + .drive-row {
   border-top: 1px solid rgb(var(--line) / 0.12);
 }
 
-.drive-row[data-folder='true'] {
+.drive-row__main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+  font: inherit;
+  color: inherit;
   cursor: pointer;
+  border-radius: 10px;
+  transition: background-color 0.2s ease, transform 0.2s ease;
 }
 
-.drive-row[data-folder='true']:hover {
+.drive-row[data-folder='true'] .drive-row__main:hover {
   background: var(--card-fill-hover);
+}
+
+.drive-row[data-folder='false'] .drive-row__main {
+  cursor: default;
 }
 
 .drive-row__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 36px;
-  height: 36px;
+  width: 38px;
+  height: 38px;
   border-radius: 10px;
   background: color-mix(in srgb, var(--color-primary) 13%, transparent);
   color: var(--color-primary);
@@ -600,9 +673,52 @@ button {
 }
 
 .drive-row[data-folder='true'] .drive-row__icon {
-  background: color-mix(in srgb, var(--color-accent) 14%, transparent);
+  background: color-mix(in srgb, var(--color-accent) 16%, transparent);
   color: var(--color-accent);
 }
+
+/* 文件按类型上色 */
+.drive-row__icon[data-kind='image'] {
+  background: color-mix(in srgb, #10b981 16%, transparent);
+  color: #059669;
+}
+.drive-row__icon[data-kind='video'] {
+  background: color-mix(in srgb, #f43f5e 14%, transparent);
+  color: #e11d48;
+}
+.drive-row__icon[data-kind='audio'] {
+  background: color-mix(in srgb, #f59e0b 16%, transparent);
+  color: #d97706;
+}
+.drive-row__icon[data-kind='pdf'] {
+  background: color-mix(in srgb, #ef4444 14%, transparent);
+  color: #dc2626;
+}
+.drive-row__icon[data-kind='code'] {
+  background: color-mix(in srgb, #06b6d4 14%, transparent);
+  color: #0891b2;
+}
+.drive-row__icon[data-kind='text'] {
+  background: color-mix(in srgb, #6366f1 14%, transparent);
+  color: #4f46e5;
+}
+.drive-row__icon[data-kind='archive'] {
+  background: color-mix(in srgb, #71717a 14%, transparent);
+  color: #52525b;
+}
+.drive-row__icon[data-kind='file'] {
+  background: color-mix(in srgb, var(--color-primary) 13%, transparent);
+  color: var(--color-primary);
+}
+
+/* 暗色模式下这些颜色要稍亮 */
+:root[data-theme='dark'] .drive-row__icon[data-kind='image'] { color: #34d399; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='video'] { color: #fb7185; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='audio'] { color: #fbbf24; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='pdf'] { color: #f87171; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='code'] { color: #22d3ee; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='text'] { color: #818cf8; }
+:root[data-theme='dark'] .drive-row__icon[data-kind='archive'] { color: #a1a1aa; }
 
 .drive-row__icon svg {
   width: 18px;
@@ -614,6 +730,7 @@ button {
   display: flex;
   flex-direction: column;
   gap: 2px;
+  flex: 1;
 }
 
 .drive-row__name {
@@ -634,22 +751,35 @@ button {
   display: flex;
   gap: 6px;
   align-items: center;
+  flex-shrink: 0;
 }
 
 .drive-row__action {
-  padding: 5px 10px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 6px 12px;
   font-size: 0.78rem;
   border-radius: 999px;
   border: 1px solid rgb(var(--line) / 0.3);
   background: transparent;
   color: var(--ink-soft);
   cursor: pointer;
+  text-decoration: none;
+  white-space: nowrap;
   transition: color 0.2s ease, border-color 0.2s ease, background 0.2s ease;
 }
 
 .drive-row__action:hover {
   color: var(--color-primary);
   border-color: var(--color-primary);
+  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
+}
+
+.drive-row__action svg {
+  width: 13px;
+  height: 13px;
+  flex-shrink: 0;
 }
 
 .drive-row__action--danger:hover {
@@ -666,7 +796,7 @@ button {
   letter-spacing: 0.04em;
 }
 
-/* ---- 11. 登录弹窗 ---- */
+/* ---- 11. 通用小弹窗（登录 / prompt / confirm 共用 .drive-dialog） ---- */
 .drive-dialog {
   border: 1px solid rgb(var(--line) / 0.3);
   border-radius: var(--card-radius, 18px);
@@ -676,26 +806,71 @@ button {
   backdrop-filter: blur(calc(var(--card-blur, 20px) + 6px)) saturate(1.1);
   -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 6px)) saturate(1.1);
   box-shadow: 0 24px 60px -20px rgb(var(--shadow) / 0.6);
-  max-width: min(360px, calc(100vw - 32px));
-  width: 100%;
+  /* 关键：dialog 自带 max-width 容易挤压，把 max-width 调到 viewport 安全区 */
+  width: min(380px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  overflow: visible;
+  opacity: 0;
+  transform: translateY(6px) scale(0.98);
+  transition:
+    opacity 0.18s ease,
+    transform 0.18s ease,
+    overlay 0.18s ease allow-discrete,
+    display 0.18s ease allow-discrete;
+}
+
+.drive-dialog[open] {
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@starting-style {
+  .drive-dialog[open] {
+    opacity: 0;
+    transform: translateY(6px) scale(0.98);
+  }
 }
 
 .drive-dialog::backdrop {
-  background: rgb(15 18 40 / 0.45);
+  background: rgb(15 18 40 / 0.4);
   backdrop-filter: blur(4px);
+  opacity: 0;
+  transition: opacity 0.18s ease, display 0.18s ease allow-discrete;
+}
+
+.drive-dialog[open]::backdrop {
+  opacity: 1;
+}
+
+@starting-style {
+  .drive-dialog[open]::backdrop {
+    opacity: 0;
+  }
 }
 
 .drive-dialog__form {
-  padding: 24px;
+  padding: 22px 24px;
   display: flex;
   flex-direction: column;
   gap: 14px;
+  /* 防止 form 内的 input 撑爆 dialog */
+  box-sizing: border-box;
+  max-width: 100%;
 }
 
 .drive-dialog__title {
   margin: 0;
   font-size: 1.05rem;
   font-weight: 700;
+}
+
+.drive-dialog__body {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.9rem;
+  line-height: 1.6;
+  word-break: break-word;
 }
 
 .drive-dialog__hint {
@@ -712,7 +887,176 @@ button {
   margin-top: 6px;
 }
 
-/* ---- 12. 页脚 ---- */
+/* ---- 12. 文件预览 dialog ---- */
+.drive-preview {
+  width: min(880px, calc(100vw - 32px));
+  max-width: calc(100vw - 32px);
+  max-height: calc(100dvh - 32px);
+  height: 80dvh;
+  display: none; /* 浏览器 dialog 默认 display:none，但我们的样式加了 flex 后没 [open] 也会显示 */
+  flex-direction: column;
+  padding: 0;
+  border: 1px solid rgb(var(--line) / 0.3);
+  border-radius: var(--card-radius, 18px);
+  background: var(--card-fill);
+  color: var(--ink);
+  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
+  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
+  box-shadow: 0 24px 60px -20px rgb(var(--shadow) / 0.6);
+  opacity: 0;
+  transform: translateY(8px) scale(0.98);
+  transition:
+    opacity 0.2s ease,
+    transform 0.2s ease,
+    display 0.2s ease allow-discrete;
+}
+
+.drive-preview[open] {
+  display: flex;
+  opacity: 1;
+  transform: translateY(0) scale(1);
+}
+
+@starting-style {
+  .drive-preview[open] {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+}
+
+.drive-preview::backdrop {
+  background: rgb(15 18 40 / 0.5);
+  backdrop-filter: blur(6px);
+  opacity: 0;
+  transition: opacity 0.2s ease, display 0.2s ease allow-discrete;
+}
+
+.drive-preview[open]::backdrop {
+  opacity: 1;
+}
+
+@starting-style {
+  .drive-preview[open]::backdrop {
+    opacity: 0;
+  }
+}
+
+.drive-preview__bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 18px;
+  border-bottom: 1px solid rgb(var(--line) / 0.18);
+  flex-shrink: 0;
+}
+
+.drive-preview__title {
+  font-weight: 600;
+  font-size: 0.95rem;
+  color: var(--ink);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 60vw;
+}
+
+.drive-preview__actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.drive-preview__body {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  padding: 16px;
+  overflow: auto;
+  background: rgb(var(--shadow) / 0.04);
+}
+
+.drive-preview__body > * {
+  max-width: 100%;
+  max-height: 100%;
+}
+
+.drive-preview__body img,
+.drive-preview__body video {
+  display: block;
+  margin: auto;
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  border-radius: 8px;
+  box-shadow: 0 8px 30px -12px rgb(var(--shadow) / 0.5);
+}
+
+.drive-preview__body iframe {
+  flex: 1;
+  width: 100%;
+  border: 0;
+  border-radius: 8px;
+  background: white;
+}
+
+.drive-preview__body audio {
+  width: 100%;
+  margin: auto;
+}
+
+.drive-preview__body pre {
+  flex: 1;
+  margin: 0;
+  padding: 16px 18px;
+  border-radius: 10px;
+  background: rgb(15 18 40 / 0.85);
+  color: #d8deff;
+  font-family: ui-monospace, SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, monospace;
+  font-size: 0.85rem;
+  line-height: 1.6;
+  overflow: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.drive-preview__body pre code {
+  font: inherit;
+  background: transparent;
+  padding: 0;
+}
+
+.drive-preview__placeholder {
+  margin: auto;
+  color: var(--ink-faint);
+  font-size: 0.9rem;
+  animation: rise-in 0.25s ease both;
+}
+
+.drive-preview__body img,
+.drive-preview__body iframe,
+.drive-preview__body video,
+.drive-preview__body audio,
+.drive-preview__body pre {
+  animation: rise-in 0.28s ease both;
+}
+
+.drive-preview__note {
+  margin: 0;
+  padding: 6px 18px 12px;
+  font-size: 0.8rem;
+  color: var(--ink-faint);
+  letter-spacing: 0.04em;
+  min-height: 1.2em;
+}
+
+.drive-preview__note[data-tone='warn'] {
+  color: var(--danger);
+}
+
+/* ---- 13. 页脚 ---- */
 .drive-footer {
   width: 100%;
   margin: 0 auto;
