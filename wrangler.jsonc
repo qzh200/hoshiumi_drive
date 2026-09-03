@@ -4,7 +4,7 @@
   // Astro 构建产物目录。Functions 在 dist/functions/ 下（由 scripts/postbuild.mjs 复制）。
   "pages_build_output_dir": "./dist",
   "d1_databases": [
-    { "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "e5823694-d2bc-4bd7-85a5-8cf494b8e87c" }
+    { "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "014c77e4-b73d-438d-a112-4bf8b3781733" }
   ],
   // 公开可提交的非敏感配置已迁到 config/storage.yaml，编译进
   // functions/_config.generated.json。敏感字段（DRIVE_MASTER_KEY、
