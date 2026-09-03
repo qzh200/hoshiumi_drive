@@ -21,7 +21,7 @@ site:
   subtitle: 于群星与潮汐之间，存放自己的文件与资源
 
   # 站点描述（SEO description 兜底值）
-  description: 一个轻量的个人云盘，挂在 Cloudflare Pages + WebDAV 上。
+  description: 一个轻量的个人云盘
 
   # 站点主域名（不要带末尾斜杠）
   url: https://drive.hoshiumi.xyz
