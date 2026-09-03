@@ -1,0 +1,49 @@
+# 部署到 Cloudflare Pages（GitHub Actions）
+#
+# 每次 push 到 master（或手动触发）时执行：
+#   1. 装依赖（pnpm）
+#   2. pnpm build（内含 config:build → astro build → postbuild，产物在 dist/）
+#   3. wrangler pages deploy dist —— Pages 会自动编译仓库根 functions/
+#
+# 需要的仓库 Secrets（Settings → Secrets and variables → Actions）：
+#   CLOUDFLARE_API_TOKEN   Dashboard → My Profile → API Tokens → Create Token
+#                         权限至少包含 Account/Cloudflare Pages:Edit
+#   CLOUDFLARE_ACCOUNT_ID  可选，Dashboard 首页右下角可查；不填也能跑但会慢一点
+name: Deploy to Cloudflare Pages
+
+on:
+  push:
+    branches: [master, main]
+  workflow_dispatch:
+
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm build
+
+      - name: Publish to Cloudflare Pages
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: pages deploy dist --project-name=hoshiumi-drive --branch=master
