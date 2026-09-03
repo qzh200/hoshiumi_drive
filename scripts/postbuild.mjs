@@ -1,76 +1,46 @@
 /**
- * postbuild：把 Cloudflare Pages Functions 与生成的后端配置复制到 dist/。
+ * postbuild：部署收尾
  *
- * 用法：在 astro build 之后自动触发（package.json 的 postbuild 调用）。
+ * 注意：本脚本在 Cloudflare Pages 的 Linux 构建机上运行，也在本地 Windows 跑，
+ * 因此【不能】依赖任何平台特定命令（powershell / sh）。用纯 Node 实现。
  *
- * 复制策略：
- *   1. functions/_config.generated.json  → dist/functions/_config.generated.json
- *   2. functions/ 整目录                  → dist/functions/
- *      （Pages Functions 通过目录约定自动加载；Astro 不会触碰这个目录）
- *   3. 写一个简单的 _headers，给静态资源设置合理缓存与安全头
+ * 职责：
+ *   - 生成 / 维护 dist/_headers（静态资源缓存与安全头）。
  *
- * 实现说明：Node 的 fs.cpSync 在 Windows 上递归大目录时偶尔会触发
- * STATUS_STACK_BUFFER_OVERRUN（0xC0000409）。我们改成 spawn powershell
- * 调 Copy-Item -Recurse，更稳；脚本里所有动作幂等。
+ * 不做的事：
+ *   - 不再把 functions/ 复制进 dist/functions。Cloudflare Pages（Git 集成）
+ *     会直接编译仓库根目录的 functions/；wrangler pages deploy / pages dev
+ *     也会自动使用仓库根的 functions/（可通过 --functions 覆盖）。多复制一份
+ *     反而可能触发「重复 Functions 目录」的告警。
  */
-import { spawnSync } from 'node:child_process';
-import { mkdirSync, existsSync, writeFileSync, statSync, renameSync } from 'node:fs';
+import { mkdirSync, existsSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(here, '..');
-const functionsDir = resolve(projectRoot, 'functions');
 const distDir = resolve(projectRoot, 'dist');
-const targetFunctionsDir = resolve(distDir, 'functions');
 
 if (!existsSync(distDir)) {
   console.error(`[postbuild] 找不到 ${distDir}，请先执行 astro build`);
   process.exit(1);
 }
 
-mkdirSync(targetFunctionsDir, { recursive: true });
+const HEADERS_CONTENT = [
+  '/*',
+  '  X-Content-Type-Options: nosniff',
+  '  Referrer-Policy: strict-origin-when-cross-origin',
+  '',
+  '/fonts/*',
+  '  Cache-Control: public, max-age=31536000, immutable',
+  '',
+].join('\n');
 
-// 用 PowerShell Copy-Item 递归拷贝（避免 Node cpSync 在 Windows 大目录下的栈溢出）
-function copyRecursive(src, dst) {
-  const r = spawnSync('powershell.exe', [
-    '-NoProfile',
-    '-NonInteractive',
-    '-Command',
-    `if (Test-Path '${dst}') { Remove-Item -LiteralPath '${dst}' -Recurse -Force }; Copy-Item -LiteralPath '${src}' -Destination '${dst}' -Recurse -Force`,
-  ], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8' });
-  if (r.status !== 0) {
-    console.error(`[postbuild] 复制失败: ${src} -> ${dst}\n${r.stderr || r.stdout}`);
-    process.exit(1);
-  }
-}
-
-copyRecursive(functionsDir, targetFunctionsDir);
-
-// 把 public/legacy_archive 从 dist 里挪走——它只是开发期旧文件存档，不该进生产
-const legacyInDist = resolve(distDir, 'legacy_archive');
-if (existsSync(legacyInDist)) {
-  renameSync(legacyInDist, resolve(distDir, '_legacy_archive_removed'));
-  console.log('[postbuild] 把 dist/legacy_archive 移走（仅 dev 存档，不发布）');
-}
-
-// 简单 _headers
 const headersPath = resolve(distDir, '_headers');
-if (!existsSync(headersPath)) {
-  writeFileSync(
-    headersPath,
-    [
-      '/*',
-      '  X-Content-Type-Options: nosniff',
-      '  Referrer-Policy: strict-origin-when-cross-origin',
-      '',
-      '/fonts/*',
-      '  Cache-Control: public, max-age=31536000, immutable',
-      '',
-    ].join('\n'),
-    'utf8',
-  );
+if (!existsSync(headersPath) || readFileSync(headersPath, 'utf8') !== HEADERS_CONTENT) {
+  writeFileSync(headersPath, HEADERS_CONTENT, 'utf8');
 }
 
-const size = statSync(targetFunctionsDir).size;
-console.log(`[postbuild] Functions 已复制到 ${targetFunctionsDir} (${(size / 1024).toFixed(1)} KB)`);
+// 兼容直接使用 dist 作为部署目录的工具（如旧脚本）
+mkdirSync(distDir, { recursive: true });
+console.log('[postbuild] 已写入 dist/_headers');
