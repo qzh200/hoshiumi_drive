@@ -1,0 +1,146 @@
+# =============================================================================
+# site.yaml —— Drive 前端配置（唯一需要你关心的文件）
+# =============================================================================
+# 修改后重新构建即可生效：
+#   pnpm build
+# 若配置不合法（缺字段 / 格式错误 / 枚举越界……），
+# 构建会直接失败并给出精确到字段的中文提示。
+# =============================================================================
+
+# =============================================================================
+# 站点基本信息
+# =============================================================================
+site:
+  # 网站名称（英文 / 主名）
+  title: Hoshiumi Drive
+
+  # 别名 / 中文名（显示在 logo 旁）
+  alternate: 星海云仓
+
+  # 一句话副标题（显示在 hero 区域）
+  subtitle: 于群星与潮汐之间，存放自己的文件与资源
+
+  # 站点描述（SEO description 兜底值）
+  description: 一个轻量的个人云盘，挂在 Cloudflare Pages + WebDAV 上。
+
+  # 站点主域名（不要带末尾斜杠）
+  url: https://drive.hoshiumi.xyz
+
+  # <html lang>
+  language: zh-CN
+
+  # IANA 时区
+  timezone: Asia/Shanghai
+
+  # favicon 路径（public/ 下的相对路径，以 / 开头）
+  favicon: /favicon.svg
+
+  # 默认 Open Graph 分享图
+  defaultOgImage: /og.svg
+
+  # SEO 关键词（可选，写入 <meta name="keywords">）
+  keywords:
+    - Hoshiumi
+    - 星海云仓
+    - 个人云盘
+    - Cloudflare
+    - WebDAV
+
+# =============================================================================
+# 顶部 / 头部
+# =============================================================================
+header:
+  # 顶部说明（显示在标题上方的极小字标签）
+  eyebrow: PRIVATE CLOUD STORAGE
+
+  # 主标题（h1）
+  title: Hoshiumi Drive
+
+  # 中文副名
+  subtitle: 星海云仓
+
+# =============================================================================
+# 主题（颜色全部转译为 CSS 变量，全局统一引用）
+# =============================================================================
+# 配色取自博客（koharu 主题）：
+#   浅色 = 蓝紫渐变 + 浅蓝紫粉渐变底
+#   深色 = 靛蓝深色 + 蓝紫亮色高亮
+# =============================================================================
+theme:
+  # 默认主题模式：light / dark / system
+  default: system
+
+  # 是否显示右上角主题切换按钮；false 时按钮隐藏、强制使用 default
+  allowSwitch: true
+
+  light:
+    background: '#f4f6fe'
+    primary: '#7f9df2'
+    secondary: '#f0a9cc'
+    accent: '#9d92ec'
+    # 渐变端点（与博客一致：浅蓝紫 → 浅粉 → 浅紫）
+    gradientStart: '#eef2ff'
+    gradientEnd: '#fdf2ff'
+
+  dark:
+    background: '#11182d'
+    primary: '#9fb6ff'
+    secondary: '#f2b4dc'
+    accent: '#bdb0ff'
+    gradientStart: '#0d1226'
+    gradientEnd: '#1a0f24'
+
+  card:
+    radius: 18px
+    blur: 20px
+    borderOpacity: 0.35
+    bgOpacity: 0.6
+
+# =============================================================================
+# 背景（克制的星海氛围，全部纯 CSS）
+# =============================================================================
+background:
+  # aurora：主题色光斑 + 渐变氛围
+  # minimal：只保留底色与可选星星 / 噪点，更素净
+  type: aurora
+
+  stars:
+    enabled: true
+    count: 22
+
+  glow: true
+  noise: true
+  gradient: true
+
+# =============================================================================
+# 动画
+# =============================================================================
+animation:
+  enabled: true
+  entrance: true
+  cardHover: true
+  backgroundDrift: true
+  respectReducedMotion: true
+
+# =============================================================================
+# 页脚
+# =============================================================================
+footer:
+  enabled: true
+  title: Hoshiumi · 星海日和
+  description: 于群星与潮汐之间，记录旅途与幻想
+  copyright: '© {year} Hoshiumi'
+
+# =============================================================================
+# SEO
+# =============================================================================
+seo:
+  title: Hoshiumi Drive · 星海云仓
+  description: 一个轻量的个人云盘，挂在 Cloudflare Pages + WebDAV 上。
+  canonical: https://drive.hoshiumi.xyz/
+  openGraph:
+    enabled: true
+    image: /og.svg
+  twitter:
+    enabled: true
+    card: summary_large_image

@@ -1,0 +1,71 @@
+---
+import type { SiteConfig } from '../config/schema.ts';
+import { getSiteConfig } from '../config/loader.ts';
+
+const config = getSiteConfig() as SiteConfig;
+const { header } = config;
+const animated = config.animation.enabled && config.animation.entrance;
+---
+
+<main class="page-main">
+  <header class="drive-header entrance" style={animated ? '--delay: 0ms' : ''}>
+    <div>
+      <p class="drive-header__eyebrow">{header.eyebrow}</p>
+      <h1 class="drive-header__title">{header.title}</h1>
+      <p class="drive-header__subtitle">{header.subtitle}</p>
+    </div>
+    <div class="drive-account">
+      <span class="drive-account__mode" data-mode>只读访问</span>
+      <button class="drive-btn drive-btn--primary" data-login type="button">密钥登录</button>
+      <button class="drive-btn drive-btn--ghost" data-logout type="button" hidden>退出</button>
+    </div>
+  </header>
+
+  <nav class="drive-toolbar entrance" style={animated ? '--delay: 80ms' : ''} aria-label="路径">
+    <button class="drive-btn drive-btn--ghost" data-up title="返回上级" type="button" disabled>↑ 返回上级</button>
+    <span class="drive-crumb">
+      <span class="drive-crumb__prefix">/</span>
+      <span class="drive-crumb__path" data-crumb>根目录</span>
+    </span>
+    <div class="drive-toolbar__spacer"></div>
+    <div class="drive-tools" data-tools hidden>
+      <label class="drive-btn drive-btn--primary drive-upload">
+        <span>上传文件</span>
+        <input id="upload" type="file" multiple />
+      </label>
+      <button class="drive-btn" data-new-folder type="button">新建文件夹</button>
+    </div>
+  </nav>
+
+  <p class="drive-notice" data-notice role="status"></p>
+
+  <section class="drive-list entrance" style={animated ? '--delay: 160ms' : ''} aria-live="polite" data-list>
+    <p class="drive-loading">正在载入文件…</p>
+  </section>
+</main>
+
+<dialog class="drive-dialog" data-login-dialog>
+  <form class="drive-dialog__form" data-login-form>
+    <h2 class="drive-dialog__title">密钥登录</h2>
+    <label class="drive-label">
+      主密钥
+      <input class="drive-input" data-key type="password" autocomplete="current-password" required />
+    </label>
+    <p class="drive-dialog__hint">登录后可上传、重命名与删除文件。</p>
+    <div class="drive-dialog__actions">
+      <button class="drive-btn drive-btn--ghost" type="button" data-cancel>取消</button>
+      <button class="drive-btn drive-btn--primary" type="submit">登录</button>
+    </div>
+  </form>
+</dialog>
+
+<template data-row-template>
+  <article class="drive-row" data-row>
+    <span class="drive-row__icon" data-icon></span>
+    <div class="drive-row__body">
+      <span class="drive-row__name" data-name></span>
+      <span class="drive-row__meta" data-meta></span>
+    </div>
+    <div class="drive-row__actions" data-actions></div>
+  </article>
+</template>

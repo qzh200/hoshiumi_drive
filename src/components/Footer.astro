@@ -1,0 +1,19 @@
+---
+import type { SiteConfig } from '../config/schema.ts';
+import { renderCopyright } from '../config/helpers.ts';
+
+interface Props {
+  config: SiteConfig;
+  startYear?: number;
+}
+
+const { config, startYear = new Date().getUTCFullYear() } = Astro.props;
+if (!config.footer.enabled) return Astro.redirect ? null : null;
+const copyright = renderCopyright(config, startYear);
+---
+
+<footer class="drive-footer">
+  <p class="drive-footer__title">{config.footer.title}</p>
+  <p class="drive-footer__desc">{config.footer.description}</p>
+  <p class="drive-footer__copy">{copyright}</p>
+</footer>

@@ -1,0 +1,18 @@
+{
+  "storage": {
+    "driver": "webdav",
+    "webdav": {
+      "endpoint": "https://pan.moe/dav",
+      "username": "",
+      "password": ""
+    },
+    "upload": {
+      "maxFileSize": null
+    },
+    "requestTimeoutMs": 30000
+  },
+  "auth": {
+    "keyLabel": "主密钥",
+    "sessionTtlDays": 7
+  }
+}

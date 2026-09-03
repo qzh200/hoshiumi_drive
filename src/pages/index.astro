@@ -1,0 +1,23 @@
+---
+import Layout from '../layouts/Layout.astro';
+import Background from '../components/Background.astro';
+import ThemeToggle from '../components/ThemeToggle.astro';
+import Footer from '../components/Footer.astro';
+import DriveApp from '../components/DriveApp.astro';
+import { getSiteConfig } from '../config/loader.ts';
+
+const config = getSiteConfig();
+const startYear = new Date().getUTCFullYear();
+---
+
+<Layout>
+  <Background config={config} />
+  <ThemeToggle config={config} />
+  <div class="page-shell">
+    <DriveApp />
+    <Footer config={config} startYear={startYear} />
+  </div>
+  <script>
+    import '../scripts/app.ts';
+  </script>
+</Layout>

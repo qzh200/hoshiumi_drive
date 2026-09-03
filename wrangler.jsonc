@@ -1,11 +1,14 @@
 {
   "name": "hoshiumi-drive",
   "compatibility_date": "2026-09-03",
-  "pages_build_output_dir": "./public",
-  "d1_databases": [{ "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "replace-with-your-d1-database-id" }],
-  "vars": {
-    "STORAGE_DRIVER": "webdav",
-    "WEBDAV_ENDPOINT": "https://pan.moe/dav"
-  },
+  // Astro 构建产物目录。Functions 在 dist/functions/ 下（由 scripts/postbuild.mjs 复制）。
+  "pages_build_output_dir": "./dist",
+  "d1_databases": [
+    { "binding": "DB", "database_name": "hoshiumi-drive", "database_id": "replace-with-your-d1-database-id" }
+  ],
+  // 公开可提交的非敏感配置已迁到 config/storage.yaml，编译进
+  // functions/_config.generated.json。敏感字段（DRIVE_MASTER_KEY、
+  // WEBDAV_USERNAME / WEBDAV_PASSWORD）请通过 .dev.vars（本地）或
+  // `wrangler pages secret put`（生产）注入。
   "observability": { "enabled": true, "head_sampling_rate": 1 }
 }

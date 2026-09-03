@@ -1,0 +1,56 @@
+---
+/**
+ * Background —— 极光 + 渐变 + 星星 + 噪点
+ * 完全复用主页（hoshiumi_home）的视觉语言；位置由固定种子生成，构建可复现。
+ */
+import type { SiteConfig } from '../config/schema.ts';
+
+interface Props {
+  config: SiteConfig;
+}
+
+const { config } = Astro.props;
+const bg = config.background;
+const drift = config.animation.enabled && config.animation.backgroundDrift;
+const twinkle = bg.stars.enabled;
+
+// 固定种子伪随机
+function makeStars(count: number) {
+  const out: { x: number; y: number; size: 'sm' | 'lg' }[] = [];
+  let seed = 1;
+  for (let i = 0; i < count; i++) {
+    seed = (seed * 9301 + 49297) % 233280;
+    const x = (seed / 233280) * 100;
+    seed = (seed * 9301 + 49297) % 233280;
+    const y = (seed / 233280) * 100;
+    seed = (seed * 9301 + 49297) % 233280;
+    const size = (seed / 233280) > 0.78 ? 'lg' : 'sm';
+    out.push({ x, y, size });
+  }
+  return out;
+}
+
+const stars = bg.stars.enabled ? makeStars(bg.stars.count) : [];
+const aurora = bg.type === 'aurora';
+const classes = [
+  'bg-scene',
+  aurora ? 'bg-scene--aurora' : 'bg-scene--minimal',
+  drift ? 'bg-scene--moving' : '',
+  twinkle ? 'bg-scene--twinkle' : '',
+].filter(Boolean).join(' ');
+---
+
+<div class={classes} aria-hidden="true">
+  {bg.gradient && aurora && <div class="bg-scene__layer bg-scene__tint" />}
+  {aurora && bg.glow && (
+    <>
+      <div class="orb orb--a" />
+      <div class="orb orb--b" />
+      <div class="orb orb--c" />
+    </>
+  )}
+  {twinkle && stars.map((s) => (
+    <span class={`star star--${s.size}`} style={`top:${s.y}%;left:${s.x}%`} />
+  ))}
+  {bg.noise && <div class="bg-scene__layer bg-scene__noise" />}
+</div>

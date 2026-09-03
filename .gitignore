@@ -2,3 +2,13 @@ node_modules/
 .dev.vars
 pnpm-lock.yaml
 .wrangler/
+
+# 构建产物
+dist/
+.astro/
+
+# Functions 编译产物（由 config:build 重新生成）
+functions/_config.generated.json
+
+# 旧的静态前端（Astro 重构前的版本，仅作存档）
+public/_legacy/
