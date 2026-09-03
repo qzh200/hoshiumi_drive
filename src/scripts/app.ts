@@ -69,6 +69,8 @@ const ICON_PENCIL =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4l10-10-4-4L4 16v4z"/></svg>';
 const ICON_TRASH =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 7h16M9 7V5a2 2 0 0 1 2-2h2a2 2 0 0 1 2 2v2M6 7l1 13a2 2 0 0 0 2 2h6a2 2 0 0 0 2-2l1-13"/></svg>';
+const ICON_PACK =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7z"/><path d="M12 10v6M9 13l3 3 3-3"/></svg>';
 
 /** 根据文件名返回图标 svg */
 function fileIcon(name: string): string {
@@ -497,6 +499,14 @@ function makeRow(item: DriveItem): HTMLElement {
   if (item.folder) {
     // 文件夹：主区域进入
     main.addEventListener('click', () => open(item.key));
+    // 打包下载（无需登录）
+    const zipLink = document.createElement('a');
+    zipLink.href = `/api/archive?path=${encodeURIComponent(item.key)}`;
+    zipLink.className = 'drive-row__action';
+    zipLink.title = '打包下载';
+    zipLink.setAttribute('aria-label', '打包下载');
+    zipLink.innerHTML = `${ICON_PACK}<span>打包</span>`;
+    actions.appendChild(zipLink);
     // 登录后：重命名 / 删除（DELETE /api/files?path=xxx 对目录同样有效）
     if (authenticated) {
       actions.appendChild(makeActionButton(ICON_PENCIL, '重命名', () => renameItem(item.key, item.name)));

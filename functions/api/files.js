@@ -1,5 +1,5 @@
 // files.js —— 列表 / 上传 / 重命名 / 删除
-import { badRequest, cleanPath, json, requireAuth } from '../_lib.js';
+import { badRequest, cleanKeyPath, cleanPath, json, requireAuth } from '../_lib.js';
 import { getStorageConfig } from '../_config.js';
 import * as storage from '../_storage.js';
 
@@ -51,8 +51,8 @@ export async function onRequestPatch(context) {
   } catch {
     return badRequest('Invalid request');
   }
-  const from = cleanPath(body.from);
-  const to = cleanPath(body.to);
+  const from = cleanKeyPath(body.from);
+  const to = cleanKeyPath(body.to);
   if (!from || !to) return badRequest('Invalid path');
   try {
     const moved = await storage.move(context.env, from, to);
@@ -66,7 +66,7 @@ export async function onRequestPatch(context) {
 export async function onRequestDelete(context) {
   const denied = await requireAuth(context);
   if (denied) return denied;
-  const key = cleanPath(new URL(context.request.url).searchParams.get('path'));
+  const key = cleanKeyPath(new URL(context.request.url).searchParams.get('path'));
   if (!key) return badRequest('Invalid path');
   try {
     const removed = await storage.remove(context.env, key);

@@ -14,7 +14,8 @@ export async function onRequestPost(context) {
   const path = cleanPath(body.path);
   if (!path) return badRequest('Invalid folder name');
   try {
-    const response = await mkdir(context.env, path);
+    // MKCOL 要求请求 URI 以 / 结尾（collection），部分服务器会校验
+    const response = await mkdir(context.env, `${path}/`);
     // 405 通常表示父目录里已存在同名目录；这里仍视为幂等成功
     if (!response.ok && response.status !== 405) return json({ error: 'Unable to create folder' }, 502);
     return json({ ok: true }, 201);

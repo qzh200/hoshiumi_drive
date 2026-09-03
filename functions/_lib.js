@@ -26,6 +26,19 @@ export function cleanPath(value) {
   return path;
 }
 
+/**
+ * 保留尾部斜杠的路径清洗（用于 MOVE / DELETE / MKCOL 等需要区分「目录」的操作）。
+ * WebDAV 对 collection 的 Destination / 请求 URI 要求以 / 结尾，去掉尾斜杠会
+ * 被部分服务器（如 ownCloud 系）拒绝。这里只校验非法片段，保留单个尾斜杠。
+ */
+export function cleanKeyPath(value) {
+  if (typeof value !== 'string' || value.includes('\\') || value.includes('\0')) return null;
+  const trailing = value.endsWith('/') ? '/' : '';
+  const parts = value.split('/').filter((p) => p.length > 0);
+  if (!parts.length || parts.some((p) => p === '.' || p === '..')) return null;
+  return parts.join('/') + trailing;
+}
+
 function cookie(request, name) {
   return request.headers.get('Cookie')?.split(';').map((v) => v.trim()).find((v) => v.startsWith(`${name}=`))?.slice(name.length + 1);
 }
