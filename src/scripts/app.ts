@@ -8,13 +8,14 @@
  *   - 搜索是客户端全量索引，**只走当前目录子树**（不递归到整棵树）。
  *   - 多选默认关闭，需要点工具栏「多选」按钮进入。
  *   - 预览：媒体 / 代码高亮 / Markdown / Word(.docx) / CSV / ZIP 内部浏览；
- *     超过上限的文件禁止预览。
+ *     按「是否整段装进内存」分档设上限（视频/音频不设上限，只流式）。
  *
  * 行为：
  *   - 列表：GET /api/list/[path-to-dir]/（path 在 URL 段里）
  *   - 单文件下载：直接 <a href="/api/download/[file]"> 或 <a download>
  *   - 预览：GET /api/preview/[file]（含 Range 透传，路径在 URL 段里）
- *   - 文件夹打包：递归 list → 并发 fetch 每文件 → client-zip 流式打 zip → 浏览器落盘
+ *   - 文件夹打包：递归 list → **限并发** fetch 每文件 → client-zip 流式打 zip →
+ *     StreamSaver（Service Worker 通道）→ 浏览器原生下载栏落盘；不支持时回退 Blob + <a download>
  *   - 多选：工具栏按钮切换；进入后行首 checkbox 出现，底部操作栏可一键打包选中
  *   - 搜索：弹窗内输入；首次搜索时构建当前目录子树的索引；结果路径为可点击面包屑
  *   - 预览增强：图片灯箱、代码高亮、Markdown、Word、CSV、ZIP 内部浏览
@@ -22,7 +23,8 @@
 
 import { downloadZip } from 'client-zip';
 import JSZip from 'jszip';
-import type { ArchiveEntry, ArchiveState, DriveItem, DriveListResponse, IndexEntry, PreviewState } from './types';
+import streamSaver from 'streamsaver';
+import type { ArchiveEntry, ArchiveState, DriveItem, DriveListResponse, IndexEntry, PreviewKind, PreviewState } from './types';
 import { ICON_CHECK, ICON_DOWNLOAD, ICON_EYE, ICON_FOLDER, ICON_PACK, ICON_X, fileIcon } from './icons';
 import { classifyPreview, extOf, fileKind, guessMime, languageFor } from './filetype';
 import { escapeHtml, fileMetaLine, formatSize, previewMetaLine, readError } from './utils';
@@ -30,15 +32,25 @@ import { buildArchiveCrumb, listArchiveEntries } from './archive';
 import { renderDocxPreview, renderMediaPreview, renderSpreadsheetPreview, renderTextPreview } from './preview-render';
 
 // ---------- 预览大小限制（客户端防御） ----------
+//
+// 关键区分：这个文件会不会被浏览器「整段装进内存」。
+//   - 视频/音频：浏览器用 Range 流式播放，内存只放当前 chunk，不设总大小上限。
+//   - 图片：<img> 整张解码，单独给一个较大但有限的上限。
+//   - PDF：pdfium 用 Range 分块加载，可以放宽很多。
+//   - 压缩包 / Office / 文本：需要在浏览器里整体载入内存解析，各自给贴近实际的上限。
 
-/** 通用预览上限：100MB */
-const MAX_PREVIEW_BYTES = 100 * 1024 * 1024;
-/** 文本/代码/Markdown 预览上限：2MB（再大就让用户下载） */
-const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
-/** Office（docx/xlsx/pptx/odf）预览上限：30MB（解析只取文本/表格，30MB 足够常见文档） */
-const MAX_OFFICE_PREVIEW_BYTES = 30 * 1024 * 1024;
 /** 压缩包内浏览上限：200MB（JSZip 在浏览器内解压大包很贵） */
 const MAX_ARCHIVE_PREVIEW_BYTES = 200 * 1024 * 1024;
+/** Office（docx/xlsx/pptx/odf）预览上限：30MB（解析只取文本/表格，30MB 足够常见文档） */
+const MAX_OFFICE_PREVIEW_BYTES = 30 * 1024 * 1024;
+/** 文本/代码/Markdown 预览上限：2MB（再大就让用户下载） */
+const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+/** 图片预览上限：100MB（太大的图 <img> 解码吃力、内存吃紧） */
+const MAX_IMAGE_PREVIEW_BYTES = 100 * 1024 * 1024;
+/** PDF 预览上限：1GB（浏览器 pdfium 用 Range 分块加载，可以放宽很多） */
+const MAX_PDF_PREVIEW_BYTES = 1024 * 1024 * 1024;
+/** 未知/二进制兜底：200MB（其实二进制走「提示下载」，不会真拉下来渲染） */
+const MAX_DEFAULT_PREVIEW_BYTES = 200 * 1024 * 1024;
 
 
 // ---------- 状态 ----------
@@ -91,6 +103,9 @@ const refs = {
   actionbarPack: $('[data-actionbar-pack]') as HTMLButtonElement,
   actionbarClear: $('[data-actionbar-clear]') as HTMLButtonElement,
   selectToggle: $('[data-select-toggle]') as HTMLButtonElement,
+  // 打包下载方式切换（Service Worker 流式 / Blob）
+  dlMode: $('[data-dl-mode]') as HTMLButtonElement,
+  dlModeLabel: $('[data-dl-mode-label]') as HTMLElement,
   searchBtn: $('[data-search-btn]') as HTMLButtonElement,
   searchModal: $('[data-search-modal]') as HTMLDialogElement,
   searchInput: $('[data-search-input]') as HTMLInputElement,
@@ -439,20 +454,55 @@ function showPreviewError(message: string, noteTone: 'info' | 'warn' = 'warn') {
   setPreviewNote('请改用下载', noteTone);
 }
 
+/**
+ * 按预览类型给出「最大可预览大小」。返回 null 表示不设大小上限。
+ * 关键区分是「会不会被浏览器整段装进内存」：见上面注释的 MAX_* 常量说明。
+ */
+function previewSizeLimitBytes(kind: PreviewKind): number | null {
+  switch (kind) {
+    case 'video':
+    case 'audio':
+      return null; // 流式播放，只占当前 chunk，不设总大小上限
+    case 'image':
+      return MAX_IMAGE_PREVIEW_BYTES;
+    case 'pdf':
+      return MAX_PDF_PREVIEW_BYTES;
+    case 'archive':
+      return MAX_ARCHIVE_PREVIEW_BYTES;
+    case 'docx':
+    case 'sheet':
+      return MAX_OFFICE_PREVIEW_BYTES;
+    case 'text':
+    case 'code':
+    case 'markdown':
+    case 'csv':
+    case 'unknown':
+      return MAX_TEXT_PREVIEW_BYTES;
+    case 'binary':
+    default:
+      return MAX_DEFAULT_PREVIEW_BYTES;
+  }
+}
+
+function previewKindLabel(kind: PreviewKind): string {
+  switch (kind) {
+    case 'image': return '图片';
+    case 'pdf': return 'PDF';
+    case 'video': return '视频';
+    case 'audio': return '音频';
+    case 'archive': return '压缩包';
+    case 'docx':
+    case 'sheet': return '文档';
+    default: return '文件';
+  }
+}
+
 function checkSizeLimit(state: PreviewState): string | null {
   const size = state.size ?? 0;
-  if (!size) return null;
-  if (state.kind === 'archive' && size > MAX_ARCHIVE_PREVIEW_BYTES) {
-    return `压缩包 ${formatSize(size)} 超过预览上限 ${formatSize(MAX_ARCHIVE_PREVIEW_BYTES)}，请下载后用本地工具浏览。`;
-  }
-  if ((state.kind === 'docx' || state.kind === 'sheet') && size > MAX_OFFICE_PREVIEW_BYTES) {
-    return `文档 ${formatSize(size)} 超过 Office 预览上限 ${formatSize(MAX_OFFICE_PREVIEW_BYTES)}，请下载后用本地软件打开。`;
-  }
-  if ((state.kind === 'text' || state.kind === 'code' || state.kind === 'markdown' || state.kind === 'csv' || state.kind === 'unknown') && size > MAX_TEXT_PREVIEW_BYTES) {
-    return `文档 ${formatSize(size)} 超过文本预览上限 ${formatSize(MAX_TEXT_PREVIEW_BYTES)}，请下载查看完整内容。`;
-  }
-  if (size > MAX_PREVIEW_BYTES) {
-    return `文件 ${formatSize(size)} 超过预览上限 ${formatSize(MAX_PREVIEW_BYTES)}，请下载后用本地工具打开。`;
+  const limit = previewSizeLimitBytes(state.kind);
+  if (!size || limit === null) return null;
+  if (size > limit) {
+    return `${previewKindLabel(state.kind)} ${formatSize(size)} 超过预览上限 ${formatSize(limit)}，请下载后用本地工具查看。`;
   }
   return null;
 }
@@ -944,6 +994,13 @@ function applyPathState(key: string) {
 }
 
 // ---------- 客户端流式打包 ----------
+//
+// 目标：把「打包整个文件夹」的内存占用压到 O(1)，并且像下载普通文件一样落盘。
+//   递归 list 收集文件（只需 PROPFIND，不占大内存）→ 限并发 fetch → client-zip 流式打 zip
+//   → StreamSaver：数据经 Service Worker 通道喂给一个伪装成下载响应的流，
+//     浏览器把它当成普通下载写进磁盘（出现在下载栏，内存只占当前 chunk）；
+//   不支持 Service Worker / 非安全上下文的浏览器 → 回退 Blob + <a download>（整包在内存）。
+// 不再把 50GB 的文件全 fetch 完 + 攒成一个大 Blob（那会 OOM）。
 
 async function collectFiles(rootKey: string, onProgress?: (count: number) => void): Promise<{ key: string; relPath: string }[]> {
   const out: { key: string; relPath: string }[] = [];
@@ -962,6 +1019,234 @@ async function collectFiles(rootKey: string, onProgress?: (count: number) => voi
   return out;
 }
 
+/** 同时进行的文件 fetch 数（3~6 个并发，避免一次全开把 pending 连接/服务端压力/缓存打满） */
+const ZIP_FETCH_CONCURRENCY = 3;
+
+interface ZipSlot {
+  ok: boolean;
+  name: string;
+  res?: Response;
+  error?: Error;
+}
+
+/** 打包输入：zip 内的相对路径 + 存储 key */
+type ZipItem = { name: string; key: string };
+/** 进度回调：已打包 done/total 个文件 */
+type ZipProgress = (done: number, total: number) => void;
+
+/**
+ * 生成 client-zip 的输入流：**限并发**预取文件，并按原顺序 yield。
+ * 只维护 ZIP_FETCH_CONCURRENCY 个在途请求，其余按需补充；
+ * 在途的 Response body 不会被消费，配合 client-zip 流式写出 + 磁盘 backpressure，
+ * 内存只占「当前网络 chunk + zip encoder buffer + 写盘 buffer」。
+ */
+async function* createZipInput(
+  items: ZipItem[],
+  onProgress?: ZipProgress,
+): AsyncGenerator<{ name: string; input: Response }> {
+  const controllers = new Map<number, AbortController>();
+  const pendings = new Map<number, Promise<ZipSlot>>();
+
+  const start = (index: number) => {
+    const ctrl = new AbortController();
+    controllers.set(index, ctrl);
+    const name = items[index].name;
+    const p = fetch(apiDownloadUrl(items[index].key), { signal: ctrl.signal }).then(
+      (res) => ({ ok: res.ok, name, res }),
+      (error: unknown) => ({ ok: false, name, error: error instanceof Error ? error : new Error(String(error)) }),
+    );
+    pendings.set(index, p);
+    return p;
+  };
+
+  // 预填首窗口
+  for (let i = 0; i < Math.min(ZIP_FETCH_CONCURRENCY, items.length); i++) start(i);
+
+  try {
+    for (let i = 0; i < items.length; i++) {
+      const slot = await pendings.get(i)!;
+      pendings.delete(i);
+      controllers.delete(i);
+      if (!slot.ok || !slot.res) throw slot.error ?? new Error(`下载 ${slot.name} 失败`);
+      if (!slot.res.ok) throw new Error(`下载 ${slot.name} 失败：HTTP ${slot.res.status}`);
+      onProgress?.(i + 1, items.length);
+      const next = i + ZIP_FETCH_CONCURRENCY;
+      if (next < items.length) start(next);
+      yield { name: slot.name, input: slot.res };
+    }
+  } finally {
+    // 出错/提前结束：取消仍挂在途的请求，避免泄漏连接
+    for (const [, ctrl] of controllers) {
+      try { ctrl.abort(); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** StreamSaver 静态资源位置（sw.js / mitm.html 由 scripts/sync-streamsaver.mjs 同步进 public/） */
+const STREAMSAVER_MITM_URL = '/streamsaver/mitm.html';
+
+/** 打包下载方式：'streamsaver' = Service Worker 流式下载（可用时）；'blob' = 始终 Blob 普通下载 */
+type DownloadMode = 'streamsaver' | 'blob';
+const DL_MODE_KEY = 'drive.downloadMode';
+const DL_MODE_LABEL: Record<DownloadMode, string> = { streamsaver: 'SW 下载', blob: 'Blob 下载' };
+const DL_MODE_TITLE: Record<DownloadMode, string> = {
+  streamsaver: '打包下载：Service Worker 流式下载（默认，不占内存，下载栏可见）。点击切换为 Blob 普通下载（整包在内存，兼容旧环境 / dev 偏慢时可切）。',
+  blob: '打包下载：Blob 普通下载（整包在内存，兼容旧环境）。点击切换为 Service Worker 流式下载（默认，不占内存）。',
+};
+
+function readDownloadMode(): DownloadMode {
+  try {
+    return localStorage.getItem(DL_MODE_KEY) === 'blob' ? 'blob' : 'streamsaver';
+  } catch {
+    return 'streamsaver';
+  }
+}
+function persistDownloadMode(mode: DownloadMode) {
+  try { localStorage.setItem(DL_MODE_KEY, mode); } catch { /* ignore */ }
+}
+
+let downloadMode: DownloadMode = readDownloadMode();
+
+function renderDownloadModeButton() {
+  if (!refs.dlMode) return;
+  refs.dlMode.dataset.mode = downloadMode;
+  refs.dlMode.setAttribute('aria-pressed', String(downloadMode === 'streamsaver'));
+  refs.dlMode.title = DL_MODE_TITLE[downloadMode];
+  if (refs.dlModeLabel) refs.dlModeLabel.textContent = DL_MODE_LABEL[downloadMode];
+}
+
+function cycleDownloadMode() {
+  downloadMode = downloadMode === 'streamsaver' ? 'blob' : 'streamsaver';
+  persistDownloadMode(downloadMode);
+  renderDownloadModeButton();
+}
+
+/** 当前是否要走 StreamSaver（用户选了 blob 就永远不走） */
+function shouldUseStreamSaver(): boolean {
+  return downloadMode !== 'blob' && streamSaverUsable();
+}
+
+let streamSaverMitmConfigured = false;
+
+/** StreamSaver 需要 Service Worker + 安全上下文（https 或 localhost）；否则直接走 Blob */
+function streamSaverUsable(): boolean {
+  if (typeof window === 'undefined') return false;
+  if (!('serviceWorker' in navigator)) return false;
+  if (!window.isSecureContext) return false;
+  return true;
+}
+
+/** 创建 StreamSaver 的下载流（首次使用时把 mitm 指到自托管地址） */
+function streamSaverDownload(fileName: string): WritableStream<Uint8Array> {
+  if (!streamSaverMitmConfigured) {
+    streamSaver.mitm = STREAMSAVER_MITM_URL;
+    streamSaverMitmConfigured = true;
+  }
+  return streamSaver.createWriteStream(fileName);
+}
+
+/** 目标块大小：把细碎小 chunk 合并成大块再喂给 StreamSaver（跨线程 postMessage 按块数计开销） */
+const STREAMSAVER_CHUNK_BYTES = 256 * 1024;
+
+/**
+ * 合并小 chunk 的 TransformStream。
+ * dev（wrangler pages dev）里上游/代理常吐出很小的 chunk，若逐块 postMessage 给
+ * Service Worker，跨线程拷贝 + 消息开销会把下载拖慢；合并到 ~256KB 再送一次能明显提速。
+ */
+function coalesceChunks(targetBytes: number): TransformStream<Uint8Array, Uint8Array> {
+  let parts: Uint8Array[] = [];
+  let total = 0;
+  const emit = (controller: TransformStreamDefaultController<Uint8Array>) => {
+    if (parts.length === 0) return;
+    if (parts.length === 1) {
+      controller.enqueue(parts[0]);
+    } else {
+      const out = new Uint8Array(total);
+      let offset = 0;
+      for (const part of parts) {
+        out.set(part, offset);
+        offset += part.byteLength;
+      }
+      controller.enqueue(out);
+    }
+    parts = [];
+    total = 0;
+  };
+  return new TransformStream<Uint8Array, Uint8Array>({
+    transform(chunk, controller) {
+      if (chunk.byteLength >= targetBytes) {
+        emit(controller);
+        controller.enqueue(chunk);
+        return;
+      }
+      parts.push(chunk);
+      total += chunk.byteLength;
+      if (total >= targetBytes) emit(controller);
+    },
+    flush(controller) {
+      emit(controller);
+    },
+  });
+}
+
+/** Blob 兜底：zip 流 → blob → 临时 <a> 触发下载（无 Service Worker / 非 https 的浏览器） */
+async function saveZipAsBlob(
+  fileName: string,
+  items: ZipItem[],
+  onProgress?: ZipProgress,
+): Promise<{ streamed: false; size: number }> {
+  const blob = await downloadZip(createZipInput(items, onProgress)).blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+  return { streamed: false, size: blob.size };
+}
+
+/**
+ * 把 items 打包成 zip 并触发浏览器下载。返回 { streamed, size }：
+ * - streamed === true  → 走了 StreamSaver（浏览器原生下载栏，流式写盘）；
+ * - streamed === false → 回退 Blob 落盘（size 为 zip 字节数）。
+ *
+ * useStreamSaver 由调用方按「用户选择的下载方式」传入：
+ * - 用户选了 Blob → 直接 Blob；
+ * - 用户选了 Service Worker → 环境可用才走 SW；SW 初始化/中途失败都会**重建
+ *   zip 管线**（重新限并发 fetch 全部文件）用 Blob 再试一次，保证尽量有文件可下。
+ */
+async function saveZipStream(
+  fileName: string,
+  items: ZipItem[],
+  onProgress?: ZipProgress,
+  useStreamSaver = true,
+): Promise<{ streamed: boolean; size: number }> {
+  if (useStreamSaver && streamSaverUsable()) {
+    try {
+      let fileStream: WritableStream<Uint8Array>;
+      try {
+        fileStream = streamSaverDownload(fileName);
+      } catch (err) {
+        // 初始化就失败（如 SW 注册被拒）：直接走 Blob，别再试 StreamSaver
+        console.warn('[打包] StreamSaver 初始化失败，回退 Blob:', err);
+        return saveZipAsBlob(fileName, items, onProgress);
+      }
+      const response = downloadZip(createZipInput(items, onProgress));
+      if (!response.body) throw new Error('无法读取 ZIP 输出流');
+      // 合并小 chunk 后再 pipeTo，避免逐小块跨线程 postMessage 拖慢下载。
+      // 不要 preventClose：pipeTo 结束时正常 close → StreamSaver 发 'end' 收尾下载。
+      await response.body.pipeThrough(coalesceChunks(STREAMSAVER_CHUNK_BYTES)).pipeTo(fileStream);
+      return { streamed: true, size: 0 };
+    } catch (err) {
+      console.warn('[打包] StreamSaver 下载中断，改用 Blob 重试:', err);
+      // fallthrough → Blob
+    }
+  }
+  return saveZipAsBlob(fileName, items, onProgress);
+}
+
 async function packFolder(folderKey: string, folderName: string) {
   if (!folderKey.endsWith('/')) folderKey = `${folderKey}/`;
   const t = toast(`正在打包「${folderName}」…`, '正在收集文件…');
@@ -978,32 +1263,20 @@ async function packFolder(folderKey: string, folderName: string) {
     t.done('error', '文件夹为空');
     return;
   }
-  t.setDetail(`共 ${files.length} 个文件，开始打包…`);
+  t.setDetail(`共 ${files.length} 个文件，开始流式打包…`);
 
-  const inflight = files.map((f) => ({
-    name: `${folderName}/${f.relPath}`,
-    responsePromise: fetch(apiDownloadUrl(f.key)),
-  }));
+  const items = files.map((f) => ({ name: `${folderName}/${f.relPath}`, key: f.key }));
+  const viaSw = shouldUseStreamSaver();
+  t.setDetail(viaSw
+    ? `共 ${files.length} 个文件 · Service Worker 流式下载中…`
+    : `共 ${files.length} 个文件 · 按设置使用 Blob 打包（整包在内存）…`);
 
-  async function* inputStream() {
-    for (const item of inflight) {
-      const res = await item.responsePromise;
-      if (!res.ok) throw new Error(`下载 ${item.name} 失败：HTTP ${res.status}`);
-      yield { name: item.name, input: res };
-    }
-  }
-
+  const onProgress: ZipProgress = (done, total) => t.setDetail(`已打包 ${done}/${total} 个文件${viaSw ? '，浏览器下载中…' : '…'}`);
   try {
-    const blob = await downloadZip(inputStream()).blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `${folderName}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    t.done('success', `已保存为 ${folderName}.zip · ${formatSize(blob.size)} · ${files.length} 个文件`);
+    const { streamed, size } = await saveZipStream(`${folderName}.zip`, items, onProgress, viaSw);
+    t.done('success', streamed
+      ? `打包完成：${folderName}.zip · ${files.length} 个文件（已进入浏览器下载栏）`
+      : `已保存为 ${folderName}.zip · ${formatSize(size)} · ${files.length} 个文件（普通下载）${downloadMode === 'streamsaver' ? ' · 本次未能走 Service Worker' : ''}`);
   } catch (err) {
     t.done('error', `打包失败：${readError(err)}`);
   }
@@ -1013,22 +1286,27 @@ async function packSelected() {
   const keys = Array.from(selected);
   if (keys.length === 0) return;
 
-  const folders = keys.filter((k) => k.endsWith('/'));
-  const files = keys.filter((k) => !k.endsWith('/'));
+  const folderKeys = keys.filter((k) => k.endsWith('/'));
+  const fileKeys = keys.filter((k) => !k.endsWith('/'));
 
   const t = toast(`正在打包 ${keys.length} 个选中项…`, '正在收集文件…');
   t.setProgress(null);
 
-  type Item = { name: string; key: string };
-  const items: Item[] = [];
-  for (const k of files) {
+  const items: ZipItem[] = [];
+  for (const k of fileKeys) {
     const rel = k.slice(prefix.length);
     if (!rel) continue;
     items.push({ name: rel, key: k });
   }
-  for (const folderKey of folders) {
+  for (const folderKey of folderKeys) {
     const folderName = folderKey.replace(/\/$/, '').split('/').pop()!;
-    const sub = await collectFiles(folderKey);
+    let sub: { key: string; relPath: string }[];
+    try {
+      sub = await collectFiles(folderKey);
+    } catch (err) {
+      t.done('error', `收集失败：${readError(err)}`);
+      return;
+    }
     for (const f of sub) {
       items.push({ name: `${folderName}/${f.relPath}`, key: f.key });
     }
@@ -1038,32 +1316,19 @@ async function packSelected() {
     t.done('error', '没有可打包的文件');
     return;
   }
-  t.setDetail(`共 ${items.length} 个文件，开始打包…`);
+  t.setDetail(`共 ${items.length} 个文件，开始流式打包…`);
 
-  const inflight = items.map((it) => ({
-    name: it.name,
-    responsePromise: fetch(apiDownloadUrl(it.key)),
-  }));
-
-  async function* inputStream() {
-    for (const item of inflight) {
-      const res = await item.responsePromise;
-      if (!res.ok) throw new Error(`下载 ${item.name} 失败：HTTP ${res.status}`);
-      yield { name: item.name, input: res };
-    }
-  }
-
+  const base = `selection-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
+  const viaSw = shouldUseStreamSaver();
+  t.setDetail(viaSw
+    ? `共 ${items.length} 个文件 · Service Worker 流式下载中…`
+    : `共 ${items.length} 个文件 · 按设置使用 Blob 打包（整包在内存）…`);
+  const onProgress: ZipProgress = (done, total) => t.setDetail(`已打包 ${done}/${total} 个文件${viaSw ? '，浏览器下载中…' : '…'}`);
   try {
-    const blob = await downloadZip(inputStream()).blob();
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `selection-${new Date().toISOString().replace(/[:.]/g, '-')}.zip`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 0);
-    t.done('success', `已保存为 selection-*.zip · ${formatSize(blob.size)} · ${items.length} 个文件`);
+    const { streamed, size } = await saveZipStream(base, items, onProgress, viaSw);
+    t.done('success', streamed
+      ? `打包完成：${base} · ${items.length} 个文件（已进入浏览器下载栏）`
+      : `已保存为 ${base} · ${formatSize(size)} · ${items.length} 个文件（普通下载）${downloadMode === 'streamsaver' ? ' · 本次未能走 Service Worker' : ''}`);
   } catch (err) {
     t.done('error', `打包失败：${readError(err)}`);
   }
@@ -1319,6 +1584,8 @@ function bind() {
   });
 
   refs.selectToggle?.addEventListener('click', () => setSelectionMode(!selectionMode));
+  // 打包下载方式切换（Service Worker 流式 ↔ Blob）
+  refs.dlMode?.addEventListener('click', () => cycleDownloadMode());
   refs.actionbarAll?.addEventListener('click', () => selectAllInCurrent());
   refs.actionbarPack?.addEventListener('click', () => void packSelected());
   refs.actionbarClear?.addEventListener('click', () => clearSelection());
@@ -1341,6 +1608,8 @@ function bind() {
 
 // 初始 selection mode 状态
 setSelectionMode(false);
+// 下载方式按钮显示当前选择
+renderDownloadModeButton();
 
 bind();
 // 启动：按地址栏 ?path= 深链定位（无参数 = 根目录）

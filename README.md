@@ -11,10 +11,10 @@
 
 | 维度 | 后端（Cloudflare Functions） | 前端（Astro + TS） |
 | --- | --- | --- |
-| 列表 | `GET /api/list?prefix=...` | 渲染 + 行交互 |
-| 单文件下载 | `GET /api/download?path=...`（Range 透传） | `<a download>` |
-| 内联预览 | `GET /api/preview?path=...`（Range 透传） | 媒体 / 代码高亮 / Markdown 渲染 / 图片灯箱 |
-| 文件夹打包 | （**无**服务端 zip） | `client-zip` 流式打包，浏览器落盘 |
+| 列表 | `GET /api/list/<directory>/`（path 在 URL 段里） | 渲染 + 行交互 |
+| 单文件下载 | `GET /api/download/<file>`（Range 透传） | `<a download>` |
+| 内联预览 | `GET /api/preview/<file>`（Range 透传） | 媒体 / 代码高亮 / Markdown 渲染 / 图片灯箱 |
+| 文件夹打包 | （**无**服务端 zip） | `client-zip` 流式打包 → StreamSaver 浏览器原生下载；老浏览器回退 Blob |
 | 多选 | — | checkbox + 浮动操作栏 + 一键打包选中 |
 | 全文搜索 | — | 客户端递归索引（首次使用时构建，缓存在内存） |
 | 身份认证 | — | 无（URL 本身是访问控制） |
@@ -32,7 +32,8 @@ pnpm dev
 打开 http://127.0.0.1:8788/ 就能用。
 
 > `pnpm dev` 会自动跑 `config:build`（把 `config/storage.yaml` 编译成
-> `functions/_config.generated.json`），如果还没 build 就先 build 一次。
+> `functions/_config.generated.json`）和 `streamsaver:sync`（把 StreamSaver 的
+> `sw.js` / `mitm.html` 同步到 `public/streamsaver/`），如果还没 build 就先 build 一次。
 >
 > 改了 `config/*.yaml` 或 `src/**/*` 后：`pnpm build` → 重新 `pnpm dev` 即可。
 
@@ -68,14 +69,14 @@ pnpm deploy
 
 ## API
 
-| Method | Path                       | Auth | 说明                              |
-| ------ | -------------------------- | ---- | --------------------------------- |
-| GET    | `/api/list?prefix=`        | 否   | 列文件/文件夹                      |
-| GET    | `/api/download?path=`      | 否   | 强制下载（支持 Range 透传）        |
-| GET    | `/api/preview?path=`       | 否   | 内联预览（图片/PDF/音视频/文本/代码/Markdown，支持 Range 透传） |
+| Method | Path                     | Auth | 说明                              |
+| ------ | ------------------------ | ---- | --------------------------------- |
+| GET    | `/api/list/<directory>/` | 否   | 列文件/文件夹（path 在 URL 段里） |
+| GET    | `/api/download/<file>`   | 否   | 强制下载（支持 Range 透传）       |
+| GET    | `/api/preview/<file>`    | 否   | 内联预览（媒体/文本/代码/Markdown/Office/压缩包，支持 Range 透传） |
 
-所有端点都不需要任何认证。任何写在仓库根 `functions/api/` 下的 JS 都会被 Cloudflare
-Pages 自动编译；目前**只剩 3 个端点**。
+所有端点都不需要任何认证；路径放在 URL 段里（百分号编码），因此可以直接分享/收藏。
+任何写在仓库根 `functions/api/` 下的 JS 都会被 Cloudflare Pages 自动编译；目前**只剩 3 个端点**。
 
 ## 目录结构
 
@@ -89,7 +90,8 @@ hoshiumi_drive/
 │   ├── components/          # Background / ThemeToggle / Footer / DriveApp
 │   ├── layouts/Layout.astro
 │   ├── pages/index.astro
-│   ├── scripts/app.ts       # 列表 + 多选 + 预览 + 搜索 + 客户端打包
+│   ├── scripts/app.ts       # 列表 + 多选 + 预览 + 搜索 + 客户端打包（StreamSaver）
+│   ├── scripts/streamsaver.d.ts  # streamsaver 类型声明
 │   └── styles/global.css    # 主题 token + 玻璃卡片 + preview/search/actionbar
 ├── functions/
 │   ├── _config.js           # 后端运行时配置加载（env 优先 + YAML 默认）
@@ -100,10 +102,12 @@ hoshiumi_drive/
 │       ├── download.js      # 单文件下载（Range 透传）
 │       └── preview.js       # 内联预览（Range 透传 + 大小限制）
 ├── public/
-│   └── fonts/               # cn-font-split 子集（寒蝉全圆体 + 源柔ゴシック）
+│   ├── fonts/               # cn-font-split 子集（寒蝉全圆体 + 源柔ゴシック）
+│   └── streamsaver/         # StreamSaver 静态资源（sw.js + mitm.html，build 前自动同步）
 ├── scripts/
 │   ├── build-storage-config.mjs   # yaml → functions/_config.generated.json
-│   ├── postbuild.mjs              # 写入 dist/_headers
+│   ├── sync-streamsaver.mjs       # node_modules/streamsaver → public/streamsaver（+ dist 镜像）
+│   ├── postbuild.mjs              # 写入 dist/_headers（含 streamsaver no-cache）
 │   └── smoke.mjs                  # 本地冒烟脚本（需要 dev 已起）
 ├── wrangler.jsonc
 ├── astro.config.mjs
@@ -129,7 +133,8 @@ hoshiumi_drive/
 - 操作栏：
   - **全选当前目录**：把当前 `prefix` 下的所有可见项加入选择。
   - **打包选中**：调用 `packSelected()`，递归走完选中的文件夹，把文件按相对路径
-    打进 zip，浏览器落盘。文件命名形如 `selection-2026-09-04T07-09-15.zip`。
+    打进 zip，走 StreamSaver 流式下载（浏览器下载栏）/ Blob 兜底。
+    文件命名形如 `selection-2026-09-04T07-09-15.zip`。
   - **清除**：清空选择。
 - 切目录时自动清空选择（多选是当前目录的上下文）。
 
@@ -155,18 +160,59 @@ hoshiumi_drive/
 - **元数据**：预览底部显示 `大小 · 修改时间`。
 - **Range 透传**：视频/音频可拖进度条（前提是上游 WebDAV 支持 Range；部分服务
   器如 `pan.moe` 不支持，会直接返回 200 + 全文）。
+- **按类型分档上限**（不再一刀切 200MB）：视频/音频流式播放、**不设总大小上限**；
+  PDF（pdfium Range 分块加载）放宽到 1GB；图片 100MB；压缩包 200MB；Office 30MB；
+  文本/代码 2MB（客户端）/ 4MB（服务端）。
 
 ### 客户端流式打包
 
 - 入口：`packFolder(folderKey, folderName)` 和 `packSelected()`，都用同一个流式
   模式：
-  1. 递归 `collectFiles` 收集所有 `{ key, relPath }`
-  2. 同时启动所有 `fetch(/api/download?path=...)`（不 await），把 Promise 放进数组
-  3. 用 `async function*` 把 Response 按序喂给 `downloadZip()`
-  4. `.blob()` 拿到 zip 内存对象，用 `URL.createObjectURL` 触发浏览器下载
-- 进度反馈用 toast：进行中（indeterminate progress）→ 成功/失败。
-- **取舍**：全在浏览器内存里跑，超大文件夹（GB 级）会 OOM。当前选择接受这个
-  上限，因为 WebDAV 单文件夹 GB 级也少。
+  1. 递归 `collectFiles` 收集所有 `{ key, relPath }`（只发 PROPFIND，不占大内存）。
+  2. **限并发**预取文件（`ZIP_FETCH_CONCURRENCY`，默认 `3`）：只维护少量在途
+     `fetch(/api/download/<file>)`，其余按需补充，避免一次性全开把 pending 连接、
+     服务端压力和浏览器缓存打满。
+  3. 用 `async function*` 按原顺序把 Response 喂给 `downloadZip()`。
+  4. 把 zip 的 `Response.body` `pipeTo` 到 **StreamSaver** 创建的下载流：
+     - StreamSaver 通过一个隐藏 iframe（`public/streamsaver/mitm.html`）注册同源
+       Service Worker（`sw.js`），再经 MessageChannel 把 zip 流喂给 SW；SW 把它
+       伪装成一个带 `Content-Disposition: attachment` 的响应，浏览器就当**普通
+       下载**写进磁盘（出现在下载栏）。
+     - 内存只占「当前网络 chunk + ZIP encoder buffer + 写盘 buffer」，不再是
+       文件夹总大小；50 GB 文件夹也不会 OOM。
+     - 不支持 Service Worker / 非 https 的浏览器 → 回退 `.blob()` +
+       `URL.createObjectURL`（旧方案，整包在内存里）。
+- 进度反馈用 toast：收集（indeterminate）→ `已打包 i / N，浏览器下载中…` →
+  成功 / 失败。
+- **取舍**：Chrome / Edge / Firefox 走流式原生下载（不 OOM）；老浏览器 / 非安全
+  上下文自动回退 Blob（受内存上限约束，适合小文件夹）。
+
+### 下载方式切换（工具栏「SW 下载 / Blob 下载」）
+
+- 工具栏新增一个下载方式按钮（默认 `SW 下载`），点击在两种模式间切换，选择存
+  `localStorage`（`drive.downloadMode`），刷新后仍然生效：
+  - **SW 下载**：优先 StreamSaver（Service Worker 流式）；环境不支持或中途失败
+    自动回退 Blob，toast 会注明「本次未能走 Service Worker」。
+  - **Blob 下载**：始终走 `.blob()` + `<a download>`（整包在内存）。
+- **dev 提示**：本地 `wrangler pages dev` 下 Service Worker 通道有时会偏慢（消息
+  通道 + 本地代理的小 chunk），已把写入 StreamSaver 的流做 ~256KB chunk 合并来
+  缓解；如果仍觉得慢，一键切到 `Blob 下载` 即可，生产 https 上两者都正常。
+
+### StreamSaver 静态资源
+
+`streamsaver` 不是纯 JS 库，需要同源托管两个静态文件（由
+`scripts/sync-streamsaver.mjs` 在 `prebuild` / `predev` 时从 `node_modules` 同步到
+`public/`，并镜像进已有的 `dist/`）：
+
+```text
+public/streamsaver/
+├── sw.js        # Service Worker：拦截下载 URL，把收到的流伪装成附件响应
+└── mitm.html    # 隐藏 iframe：注册 sw.js，并把页面的 MessageChannel 转发给 SW
+```
+
+`src/scripts/app.ts` 里把 `streamSaver.mitm` 指到 `/streamsaver/mitm.html`。
+`scripts/postbuild.mjs` 会给这两个文件写 `Cache-Control: no-cache`，避免 SW 更新
+被静态缓存卡住。
 
 ## 冒烟测试
 

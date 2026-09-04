@@ -14,12 +14,18 @@
 //     扩展名不认识时透传上游，再兜底 octet-stream。
 //   - Range 透传：视频/音频拖进度条、<video> 定位都能用。
 //   - 边缘缓存：5 分钟（仅无 Range 请求；带 Range 的不缓存）。
-//   - 大小防御：通用 200MB；文本/代码类 4MB（避免直接开分享链接时灌爆浏览器）。
+//   - 大小防御：按「是否会整段进内存」分档（视频/音频流式不设上限；图片/PDF 放宽；
+//     压缩包/office/文本贴近实际上限），避免直接开分享链接时灌爆浏览器。
 import { badRequest, json, urlHasTrailingSlash, urlPathSegments } from '../../_lib.js';
 import { get } from '../../_storage.js';
 
-const MAX_PREVIEW_BYTES = 200 * 1024 * 1024; // 与客户端「压缩包 200MB」上限对齐
+// —— 预览大小上限（按类型区分是否会「整段进内存」，与客户端 app.ts 保持一致）——
 const MAX_TEXT_PREVIEW_BYTES = 4 * 1024 * 1024; // 纯文本直接打开的上限（客户端还有更小的一层）
+const MAX_ARCHIVE_BYTES = 200 * 1024 * 1024;   // 压缩包（JSZip 在浏览器内解压大包很贵）
+const MAX_OFFICE_BYTES = 30 * 1024 * 1024;     // office（docx/xlsx/pptx/odf）
+const MAX_IMAGE_BYTES = 100 * 1024 * 1024;     // 图片（<img> 整张解码）
+const MAX_PDF_BYTES = 1024 * 1024 * 1024;      // PDF（pdfium Range 分块加载，放宽很多）
+const MAX_DEFAULT_BYTES = 200 * 1024 * 1024;   // 未知/二进制兜底（前端不会真拉来渲染）
 
 // 扩展名 → Content-Type。媒体/文本/office/压缩包都覆盖：
 // 不认识的后缀才交给上游 content-type（或 octet-stream）。
@@ -76,8 +82,29 @@ const TEXT_EXTS = new Set([
   'json', 'jsonc', 'json5', 'js', 'mjs', 'cjs', 'ts', 'tsx', 'jsx', 'css', 'scss', 'less',
   'html', 'htm', 'xml', 'vue', 'svelte', 'yaml', 'yml', 'py', 'rb', 'rs', 'go', 'java',
   'kt', 'swift', 'c', 'h', 'cc', 'cpp', 'hpp', 'php', 'sh', 'bash', 'zsh', 'ps1', 'sql',
-  'lua', 'r', 'dart', 'toml', 'svg',
+  'lua', 'r', 'dart', 'toml',
 ]);
+// 流式媒体（浏览器用 Range，只占当前 chunk，不设总大小上限）
+const STREAMING_EXTS = new Set([
+  'mp4', 'webm', 'mov', 'm4v', 'ogv', 'mkv', 'avi', // 视频
+  'mp3', 'wav', 'flac', 'ogg', 'oga', 'm4a', 'opus', 'aac', // 音频
+]);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'ico', 'svg']);
+const ARCHIVE_EXTS = new Set(['zip', 'jar', 'apk', 'war']);
+const OFFICE_EXTS = new Set([
+  'docx', 'doc', 'odt', 'xlsx', 'xlsm', 'xls', 'ods', 'pptx', 'ppt', 'odp',
+]);
+
+/** 按扩展名决定「预览允许的最大文件大小」；null 表示不设上限（流式媒体）。 */
+function previewSizeLimit(ext) {
+  if (STREAMING_EXTS.has(ext)) return null; // 视频/音频：Range 流式，不设总大小上限
+  if (IMAGE_EXTS.has(ext)) return MAX_IMAGE_BYTES;
+  if (ext === 'pdf') return MAX_PDF_BYTES;
+  if (ARCHIVE_EXTS.has(ext)) return MAX_ARCHIVE_BYTES;
+  if (OFFICE_EXTS.has(ext)) return MAX_OFFICE_BYTES;
+  if (TEXT_EXTS.has(ext)) return MAX_TEXT_PREVIEW_BYTES;
+  return MAX_DEFAULT_BYTES;
+}
 
 function extOf(path) {
   const name = path.split('/').pop() || '';
@@ -120,14 +147,12 @@ export async function onRequestGet({ request, env }) {
   if (!rangeHeader) headers.set('cache-control', 'public, max-age=300');
   headers.set('x-content-type-options', 'nosniff');
 
-  // 大文件防御（流式透传，本身不占内存；只是拒绝明显过大的预览）
+  // 大文件防御（流式透传，本身不占内存；只是按「是否会整段进内存」拒绝明显过大的预览）。
+  // 视频/音频不做总大小上限（浏览器 Range 流式）；图片/PDF 放宽；压缩包/office/文本保持贴近实际的上限。
   const size = Number(headers.get('content-length') || 0);
-  if (size > MAX_PREVIEW_BYTES) {
-    return json({ error: 'File too large to preview', limit: MAX_PREVIEW_BYTES }, 413);
-  }
-  // 文本类额外限制：直接开分享链接时避免浏览器被整本灌爆
-  if (TEXT_EXTS.has(extOf(raw)) && size > MAX_TEXT_PREVIEW_BYTES) {
-    return json({ error: 'Text too large to preview', limit: MAX_TEXT_PREVIEW_BYTES }, 413);
+  const limit = previewSizeLimit(extOf(raw));
+  if (limit !== null && size > limit) {
+    return json({ error: 'File too large to preview', limit }, 413);
   }
 
   return new Response(object.body, { status: object.status, headers });

@@ -34,6 +34,13 @@ const HEADERS_CONTENT = [
   '/fonts/*',
   '  Cache-Control: public, max-age=31536000, immutable',
   '',
+  // Service Worker 与 mitm 页面要能及时更新：不缓存
+  '/streamsaver/sw.js',
+  '  Cache-Control: no-cache',
+  '',
+  '/streamsaver/mitm.html',
+  '  Cache-Control: no-cache',
+  '',
 ].join('\n');
 
 const headersPath = resolve(distDir, '_headers');

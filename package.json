@@ -5,8 +5,9 @@
   "type": "module",
   "scripts": {
     "config:build": "node ./scripts/build-storage-config.mjs",
-    "predev": "pnpm config:build && node -e \"if(!require('fs').existsSync('dist')){require('child_process').execSync('pnpm build',{stdio:'inherit'})}\"",
-    "prebuild": "pnpm config:build",
+    "streamsaver:sync": "node ./scripts/sync-streamsaver.mjs",
+    "predev": "pnpm config:build && pnpm streamsaver:sync && node -e \"if(!require('fs').existsSync('dist')){require('child_process').execSync('pnpm build',{stdio:'inherit'})}\"",
+    "prebuild": "pnpm config:build && pnpm streamsaver:sync",
     "postbuild": "node ./scripts/postbuild.mjs",
     "dev": "wrangler pages dev dist --port 8788 --ip 127.0.0.1 --compatibility-date 2026-09-03",
     "dev:astro": "astro dev",
@@ -22,6 +23,7 @@
     "jszip": "^3.10.1",
     "mammoth": "^1.12.2",
     "marked": "^18.0.11",
+    "streamsaver": "^2.0.6",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz",
     "yaml": "^2.9.0",
     "zod": "^3.25.76"
