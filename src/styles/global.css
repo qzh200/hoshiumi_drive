@@ -54,6 +54,9 @@
   --shadow: 90 98 164;
   --card-fill: rgb(255 255 255 / var(--card-bg-opacity, 0.62));
   --card-fill-hover: rgb(255 255 255 / calc(var(--card-bg-opacity, 0.62) + 0.16));
+  /* 浮窗（dialog / toast / actionbar）专用：提高不透明度，避免背后内容干扰视觉 */
+  --card-fill-solid: rgb(255 255 255 / 0.96);
+  --card-fill-solid-hover: rgb(255 255 255 / 1);
   --star: 104 128 226;
   --orb-opacity: 0.5;
   --noise-opacity: 0.045;
@@ -70,6 +73,8 @@
   --shadow: 3 6 24;
   --card-fill: rgb(17 21 48 / var(--card-bg-opacity, 0.6));
   --card-fill-hover: rgb(32 38 82 / calc(var(--card-bg-opacity, 0.6) + 0.14));
+  --card-fill-solid: rgb(20 24 52 / 0.94);
+  --card-fill-solid-hover: rgb(28 34 70 / 0.96);
   --star: 186 201 255;
   --orb-opacity: 0.36;
   --noise-opacity: 0.06;
@@ -932,11 +937,9 @@ button.drive-crumb__seg:disabled {
   padding: 0;
   border: 1px solid rgb(var(--line) / 0.3);
   border-radius: var(--card-radius, 18px);
-  background: var(--card-fill);
+  background: var(--card-fill-solid);
   color: var(--ink);
-  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  box-shadow: 0 24px 60px -20px rgb(var(--shadow) / 0.6);
+  box-shadow: 0 24px 60px -16px rgb(var(--shadow) / 0.7);
   opacity: 0;
   transform: translateY(8px) scale(0.98);
   transition:
@@ -970,8 +973,8 @@ button.drive-crumb__seg:disabled {
 }
 
 .drive-preview--inner .drive-preview__bar {
-  background: color-mix(in srgb, var(--color-primary) 8%, transparent);
-  border-bottom-color: rgb(var(--line) / 0.28);
+  background: color-mix(in srgb, var(--color-primary) 14%, var(--card-fill-solid));
+  border-bottom-color: rgb(var(--line) / 0.32);
 }
 
 .drive-preview--inner .drive-preview__title {
@@ -994,8 +997,8 @@ button.drive-crumb__seg:disabled {
 }
 
 .drive-preview::backdrop {
-  background: rgb(15 18 40 / 0.5);
-  backdrop-filter: blur(6px);
+  background: rgb(15 18 40 / 0.35);
+  backdrop-filter: blur(4px);
   opacity: 0;
   transition: opacity 0.2s ease, display 0.2s ease allow-discrete;
 }
@@ -1044,13 +1047,14 @@ button.drive-crumb__seg:disabled {
   justify-content: stretch;
   padding: 16px;
   overflow: auto;
-  background: rgb(var(--shadow) / 0.05);
+  background: color-mix(in srgb, var(--card-fill-solid) 88%, rgb(var(--shadow) / 0.18));
 }
 
 /* 压缩包浏览器：内容靠顶、padding 收紧、让小内容浮窗也精致 */
 .drive-preview__body:has(.drive-preview__archive) {
   align-items: flex-start;
   padding: 14px;
+  background: color-mix(in srgb, var(--card-fill-solid) 94%, rgb(var(--shadow) / 0.12));
 }
 
 .drive-preview__body > * {
@@ -1275,10 +1279,8 @@ button.drive-crumb__seg:disabled {
   padding: 16px 18px;
   border-radius: 14px;
   border: 1px solid rgb(var(--line) / 0.3);
-  background: var(--card-fill);
-  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  box-shadow: 0 16px 40px -20px rgb(var(--shadow) / 0.5);
+  background: var(--card-fill-solid);
+  box-shadow: 0 16px 40px -16px rgb(var(--shadow) / 0.6);
   color: var(--ink);
   font-size: 0.95rem;
   pointer-events: auto;
@@ -1516,10 +1518,8 @@ button.drive-crumb__seg:disabled {
   padding: 10px 14px;
   border-radius: 999px;
   border: 1px solid rgb(var(--line) / var(--card-border-opacity, 0.45));
-  background: var(--card-fill);
-  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  box-shadow: 0 16px 40px -16px rgb(var(--shadow) / 0.55);
+  background: var(--card-fill-solid);
+  box-shadow: 0 16px 40px -16px rgb(var(--shadow) / 0.6);
   color: var(--ink);
   font-size: 0.9rem;
   animation: actionbar-in 0.22s ease both;
@@ -1555,11 +1555,9 @@ button.drive-crumb__seg:disabled {
   padding: 0;
   border: 1px solid rgb(var(--line) / 0.3);
   border-radius: var(--card-radius, 18px);
-  background: var(--card-fill);
+  background: var(--card-fill-solid);
   color: var(--ink);
-  backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  -webkit-backdrop-filter: blur(calc(var(--card-blur, 20px) + 8px)) saturate(1.1);
-  box-shadow: 0 24px 60px -20px rgb(var(--shadow) / 0.6);
+  box-shadow: 0 24px 60px -16px rgb(var(--shadow) / 0.7);
   opacity: 0;
   transform: translateY(8px) scale(0.98);
   transition: opacity 0.2s ease, transform 0.2s ease, display 0.2s ease allow-discrete;
@@ -1579,8 +1577,8 @@ button.drive-crumb__seg:disabled {
 }
 
 .drive-search::backdrop {
-  background: rgb(15 18 40 / 0.45);
-  backdrop-filter: blur(4px);
+  background: rgb(15 18 40 / 0.3);
+  backdrop-filter: blur(3px);
   opacity: 0;
   transition: opacity 0.2s ease, display 0.2s ease allow-discrete;
 }
@@ -1932,8 +1930,8 @@ button.drive-crumb__seg:disabled {
   gap: 4px;
   padding: 10px 14px;
   border-radius: 12px;
-  background: color-mix(in srgb, var(--color-primary) 12%, transparent);
-  border: 1px solid color-mix(in srgb, var(--color-primary) 28%, transparent);
+  background: color-mix(in srgb, var(--color-primary) 16%, var(--card-fill-solid));
+  border: 1px solid color-mix(in srgb, var(--color-primary) 32%, transparent);
   font-size: 0.88rem;
   color: var(--ink);
   font-weight: 600;
@@ -2026,7 +2024,7 @@ button.drive-preview__archive-crumb-seg:focus-visible {
 
 .drive-preview__archive-item:hover,
 .drive-preview__archive-item:focus-visible {
-  background: var(--card-fill-hover);
+  background: color-mix(in srgb, var(--color-primary) 10%, var(--card-fill-solid));
   outline: none;
 }
 
