@@ -562,10 +562,15 @@ function setGalleryNav(visible: boolean) {
 function renderMediaPreview(state: PreviewState, url: string) {
   const body = activePreview.body;
   body.innerHTML = '';
+  const failNote = () => {
+    const ext = extOf(state.name);
+    activePreview.body.innerHTML = `<p class="drive-preview__placeholder">无法加载 .${ext}（浏览器不支持解码或文件已损坏），请用右上角「下载」后在本机打开。</p>`;
+  };
   if (state.kind === 'image') {
     const img = document.createElement('img');
     img.alt = state.name;
     img.src = url;
+    img.addEventListener('error', failNote);
     body.appendChild(img);
     return;
   }
@@ -581,6 +586,7 @@ function renderMediaPreview(state: PreviewState, url: string) {
     audio.controls = true;
     audio.preload = 'metadata';
     audio.src = url;
+    audio.addEventListener('error', failNote);
     body.appendChild(audio);
     return;
   }
@@ -589,6 +595,7 @@ function renderMediaPreview(state: PreviewState, url: string) {
     video.controls = true;
     video.preload = 'metadata';
     video.src = url;
+    video.addEventListener('error', failNote);
     body.appendChild(video);
     return;
   }
@@ -1348,7 +1355,8 @@ function makeRow(item: DriveItem): HTMLElement {
   } else {
     const kind = fileKind(name);
     actions.appendChild(
-      makeButtonAction(ICON_EYE, '预览', () =>
+      makeButtonAction(ICON_EYE, '预览', () => {
+        pushPathState(item.key); // 让地址栏带上文件路径（可直接分享该预览链接）
         openPreview({
           key: item.key,
           name,
@@ -1357,8 +1365,8 @@ function makeRow(item: DriveItem): HTMLElement {
           size: item.size,
           uploaded: item.uploaded,
           gallery: kind === 'image' && lastList ? buildImageGallery(item.key) : undefined,
-        }),
-      ),
+        });
+      }),
     );
     actions.appendChild(
       makeLinkAction(ICON_DOWNLOAD, '下载', apiDownloadUrl(item.key), true),
@@ -1409,6 +1417,27 @@ async function load() {
   }
   renderCrumb();
   refs.up!.disabled = !prefix;
+  // 文件深链：目录列出来后自动打开预览（如在列表里能找到该文件）
+  if (pendingOpenFile) {
+    const target = pendingOpenFile;
+    pendingOpenFile = null;
+    if (lastList && target.startsWith(prefix)) {
+      const file = lastList.files.find((f) => f.key === target);
+      if (file) {
+        setTimeout(() => {
+          openPreview({
+            key: target,
+            name: file.name,
+            kind: classifyPreview('', file.name),
+            mime: '',
+            size: file.size,
+            uploaded: file.uploaded,
+            gallery: fileKind(file.name) === 'image' ? buildImageGallery(target) : undefined,
+          });
+        }, 150);
+      }
+    }
+  }
 }
 
 /** 渲染面包屑：根目录 / 一段 / 二段 / 当前段（不可点）。每段都是 button 可跳转。 */
@@ -1457,7 +1486,90 @@ function renderCrumb() {
 }
 
 function open(key: string) {
-  prefix = key;
+  if (key === prefix) return;
+  pushPathState(key);
+  applyPathState(key);
+}
+
+// ---------- 地址栏路由（?path=<目录|文件>，支持分享 / 收藏 / 前进后退） ----------
+
+/** 目录 key（以 / 结尾或空串）或文件 key → ?path= 参数值 */
+function urlPathParam(key: string): string {
+  const parts = key.split('/').filter(Boolean).map(encodeURIComponent);
+  const dirSuffix = key !== '' && key.endsWith('/') && parts.length > 0 ? '/' : '';
+  return parts.join('/') + dirSuffix;
+}
+
+/** 生成带 ?path= 的地址（保留当前 pathname，替换 query） */
+function urlForPath(key: string): string {
+  const param = urlPathParam(key);
+  const query = param ? `?path=${param}` : '';
+  const keep = location.origin + location.pathname;
+  return `${keep}${query}${location.hash}`;
+}
+
+/**
+ * 从地址栏解析当前位置。
+ * ?path 以 / 结尾 = 目录；否则最后一段视为文件（进入父目录后自动打开预览）。
+ */
+function parseLocationKey(): { key: string; isDir: boolean } {
+  const raw = new URLSearchParams(location.search).get('path') || '';
+  if (!raw) return { key: '', isDir: true };
+  const isDir = raw.endsWith('/');
+  const rawParts = raw.split('/').filter((p) => p.length > 0);
+  const parts: string[] = [];
+  for (const p of rawParts) {
+    let seg: string;
+    try {
+      seg = decodeURIComponent(p);
+    } catch {
+      return { key: '', isDir: true };
+    }
+    if (!seg || seg === '.' || seg === '..' || seg.includes('\\') || seg.includes('\0')) {
+      return { key: '', isDir: true };
+    }
+    parts.push(seg);
+  }
+  if (parts.length === 0) return { key: '', isDir: true };
+  return isDir
+    ? { key: `${parts.join('/')}/`, isDir: true }
+    : { key: parts.join('/'), isDir: false };
+}
+
+/** 当前地址对应的内部 key（文件 = 不带尾斜杠的完整路径；目录/根 = 带尾斜杠 / ''） */
+function locationKey(): string {
+  return parseLocationKey().key;
+}
+
+let applyingState = false;
+/** 深链：目录加载完成后要自动打开的顶层文件 key */
+let pendingOpenFile: string | null = null;
+
+/** 把 key 写进地址栏（pushState，前进/后退可用）；不触发页面加载 */
+function pushPathState(key: string) {
+  if (urlForPath(key) === location.href.replace(location.hash, '')) return;
+  applyingState = true;
+  try {
+    history.pushState({ driveKey: key }, '', urlForPath(key));
+  } finally {
+    applyingState = false;
+  }
+}
+
+/** 应用内部路径状态并刷新列表（不写历史）。key 为目录时列目录；为文件时进父目录后自动打开 */
+function applyPathState(key: string) {
+  if (key === '' || key.endsWith('/')) {
+    // 回到目录视图时把可能开着的预览层关掉
+    if (refs.preview?.open) refs.preview.close();
+    if (refs.previewInner?.open) refs.previewInner.close();
+    pendingOpenFile = null;
+    prefix = key;
+    load();
+    return;
+  }
+  const last = key.lastIndexOf('/');
+  prefix = last >= 0 ? key.slice(0, last + 1) : '';
+  pendingOpenFile = key;
   load();
 }
 
@@ -1732,6 +1844,7 @@ function navigateToResult(entry: IndexEntry) {
     return;
   }
   const parent = entry.parent;
+  pushPathState(entry.key); // 让地址栏带上文件路径
   if (parent !== prefix) {
     prefix = parent;
     load();
@@ -1800,8 +1913,7 @@ function closeSearch() {
 
 function bind() {
   refs.up?.addEventListener('click', () => {
-    prefix = prefix.replace(/[^/]+\/$/, '');
-    load();
+    open(prefix.replace(/[^/]+\/$/, ''));
   });
 
   // ----- 外层预览 dialog（顶层文件 / ZIP 内容浏览器） -----
@@ -1848,10 +1960,18 @@ function bind() {
   refs.searchModal?.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
   });
+
+  // 地址栏路由：浏览器前进/后退
+  window.addEventListener('popstate', () => {
+    if (applyingState) return;
+    const state = history.state as { driveKey?: string } | null;
+    applyPathState(state && typeof state.driveKey === 'string' ? state.driveKey : locationKey());
+  });
 }
 
 // 初始 selection mode 状态
 setSelectionMode(false);
 
 bind();
-load();
+// 启动：按地址栏 ?path= 深链定位（无参数 = 根目录）
+applyPathState(locationKey());
