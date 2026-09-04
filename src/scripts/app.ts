@@ -11,9 +11,9 @@
  *     超过上限的文件禁止预览。
  *
  * 行为：
- *   - 列表：GET /api/list?prefix=...
- *   - 单文件下载：直接 <a href="/api/download?path=...">
- *   - 预览：GET /api/preview?path=...（含 Range 透传）
+ *   - 列表：GET /api/list/[path-to-dir]/（path 在 URL 段里）
+ *   - 单文件下载：直接 <a href="/api/download/[file]"> 或 <a download>
+ *   - 预览：GET /api/preview/[file]（含 Range 透传，路径在 URL 段里）
  *   - 文件夹打包：递归 list → 并发 fetch 每文件 → client-zip 流式打 zip → 浏览器落盘
  *   - 多选：工具栏按钮切换；进入后行首 checkbox 出现，底部操作栏可一键打包选中
  *   - 搜索：弹窗内输入；首次搜索时构建当前目录子树的索引；结果路径为可点击面包屑
@@ -37,6 +37,7 @@ import go from 'highlight.js/lib/languages/go';
 import sql from 'highlight.js/lib/languages/sql';
 import { convertToHtml as mammothConvert } from 'mammoth';
 import JSZip from 'jszip';
+import { parseOfficeFile } from './office-parser';
 import 'highlight.js/styles/atom-one-dark.css';
 
 hljs.registerLanguage('javascript', javascript);
@@ -81,7 +82,7 @@ interface IndexEntry {
   scopePrefix: string;
 }
 
-type PreviewKind = 'image' | 'pdf' | 'audio' | 'video' | 'code' | 'markdown' | 'docx' | 'csv' | 'archive' | 'text' | 'unknown';
+type PreviewKind = 'image' | 'pdf' | 'audio' | 'video' | 'code' | 'markdown' | 'docx' | 'sheet' | 'csv' | 'archive' | 'text' | 'binary' | 'unknown';
 
 interface PreviewState {
   key: string;
@@ -91,6 +92,26 @@ interface PreviewState {
   size?: number;
   uploaded?: string;
   gallery?: { keys: string[]; names: string[]; index: number };
+  /** 已有源 URL（通常是 zip 内文件的 blob URL），就用它；否则从 /api/preview/... 拉 */
+  sourceUrl?: string;
+  /** 预览底部状态条的额外前缀，比如 "ZIP 内文件" */
+  sourceLabel?: string;
+}
+
+interface ArchiveEntry {
+  name: string;
+  fullPath: string;
+  isDir: boolean;
+  size: number;
+  date: Date;
+}
+
+interface ArchiveState {
+  zip: JSZip;
+  zipKey: string;
+  zipName: string;
+  /** 当前在 zip 内的路径，以 / 结尾；'' 表示根 */
+  innerPath: string;
 }
 
 // ---------- 预览大小限制（客户端防御） ----------
@@ -99,6 +120,8 @@ interface PreviewState {
 const MAX_PREVIEW_BYTES = 100 * 1024 * 1024;
 /** 文本/代码/Markdown 预览上限：2MB（再大就让用户下载） */
 const MAX_TEXT_PREVIEW_BYTES = 2 * 1024 * 1024;
+/** Office（docx/xlsx/pptx/odf）预览上限：30MB（解析只取文本/表格，30MB 足够常见文档） */
+const MAX_OFFICE_PREVIEW_BYTES = 30 * 1024 * 1024;
 /** 压缩包内浏览上限：200MB（JSZip 在浏览器内解压大包很贵） */
 const MAX_ARCHIVE_PREVIEW_BYTES = 200 * 1024 * 1024;
 
@@ -122,6 +145,8 @@ const ICON_FILE_TEXT =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>';
 const ICON_FILE_ARCHIVE =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="4" rx="1"/><path d="M5 8v11a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8"/><path d="M10 12h4"/></svg>';
+const ICON_FILE_SHEET =
+  '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M4 9h16M4 15h16M9 9v12M15 9v12"/></svg>';
 const ICON_CHECK =
   '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 6 9 17l-5-5"/></svg>';
 const ICON_X =
@@ -139,6 +164,7 @@ const ICON_EXT_KIND: Record<string, string> = {
   audio: ICON_FILE_AUDIO,
   pdf: ICON_FILE_PDF,
   archive: ICON_FILE_ARCHIVE,
+  sheet: ICON_FILE_SHEET,
   text: ICON_FILE_TEXT,
   code: ICON_FILE_CODE,
 };
@@ -150,13 +176,27 @@ const CODE_EXTS = new Set([
   'c', 'cc', 'cpp', 'h', 'hpp', 'm', 'mm',
   'php', 'sh', 'bash', 'zsh', 'ps1', 'sql', 'lua', 'r', 'dart', 'toml', 'yaml', 'yml',
   'json', 'jsonc', 'json5',
+  'properties', 'tex', 'bat', 'cmd', 'cs', 'pl', 'vbs', 'dockerfile', 'cfg',
 ]);
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic', 'ico']);
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic', 'ico', 'svg']);
 const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v']);
 const AUDIO_EXTS = new Set(['mp3', 'wav', 'flac', 'ogg', 'm4a', 'opus', 'aac']);
-const ARCHIVE_EXTS = new Set(['zip', 'jar', 'apk', 'epub', 'odt', 'ods', 'odp']);
-const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst']);
-const DOCX_EXTS = new Set(['docx']);
+const ARCHIVE_EXTS = new Set(['zip', 'jar', 'apk', 'war']);
+// 已知的「不支持在线预览」的类型：给明确的下载提示，而不是乱码或走复杂解析。
+// 演示（ppt/pptx/odp）、数据库（db/sqlite*）、电子书（epub/mobi/azw*）等一律归此类。
+const BINARY_EXTS = new Set([
+  'rar', '7z', 'zipx', 'zst', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'deb', 'dmg', 'iso', 'img',
+  'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'pyc', 'pyo', 'class', 'o', 'a', 'lib', 'obj',
+  'com', 'wasm', 'db', 'sqlite', 'sqlite3', 'mdb', 'accdb', 'tif', 'tiff', 'woff', 'woff2',
+  'ttf', 'otf', 'eot',
+  // 演示
+  'ppt', 'pptx', 'odp',
+  // 电子书
+  'epub', 'mobi', 'azw', 'azw3', 'fb2', 'djvu',
+]);
+const SHEET_EXTS = new Set(['xlsx', 'xlsm', 'ods', 'xls']);
+const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst', 'rtf', 'm3u8', 'example']);
+const DOCX_EXTS = new Set(['docx', 'odt']);
 const DOC_EXTS = new Set(['doc']);
 const CSV_EXTS = new Set(['csv', 'tsv']);
 
@@ -165,12 +205,13 @@ function fileIcon(name: string): string {
   return ICON_EXT_KIND[kind] ?? ICON_FILE_DEFAULT;
 }
 
-function fileKind(name: string): 'image' | 'video' | 'audio' | 'pdf' | 'docx' | 'doc' | 'archive' | 'code' | 'text' | 'file' {
+function fileKind(name: string): 'image' | 'video' | 'audio' | 'pdf' | 'docx' | 'doc' | 'sheet' | 'archive' | 'code' | 'text' | 'file' {
   const ext = extOf(name);
   if (IMAGE_EXTS.has(ext)) return 'image';
   if (VIDEO_EXTS.has(ext)) return 'video';
   if (AUDIO_EXTS.has(ext)) return 'audio';
   if (ext === 'pdf') return 'pdf';
+  if (SHEET_EXTS.has(ext)) return 'sheet';
   if (DOCX_EXTS.has(ext)) return 'docx';
   if (DOC_EXTS.has(ext)) return 'doc';
   if (ARCHIVE_EXTS.has(ext)) return 'archive';
@@ -195,6 +236,10 @@ let searchIndex: Map<string, IndexEntry> | null = null;
 let searchIndexScope = ''; // 索引对应的 prefix；切目录时清掉
 let searchIndexPromise: Promise<Map<string, IndexEntry>> | null = null;
 let searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+// 压缩包内浏览状态
+let archiveState: ArchiveState | null = null;
+// 当前预览持有的 blob URL（zip 内文件预览用），切预览或关闭时 revoke
+let currentBlobUrl: string | null = null;
 
 const $ = <T extends Element>(sel: string) => root.querySelector(sel) as T | null;
 
@@ -270,6 +315,7 @@ function previewMetaLine(state: PreviewState): string {
   const parts: string[] = [];
   if (state.size) parts.push(formatSize(state.size));
   if (state.uploaded) parts.push(formatDate(state.uploaded));
+  if (state.sourceLabel) parts.push(state.sourceLabel);
   if (state.gallery) {
     const { index, keys } = state.gallery;
     parts.push(`${index + 1} / ${keys.length}`);
@@ -277,11 +323,45 @@ function previewMetaLine(state: PreviewState): string {
   return parts.join(' · ');
 }
 
+/** 跟踪预览期间创建的 blob URL；切预览 / 关闭时 revoke 避免内存泄漏 */
+function setBlobUrl(url: string | null) {
+  if (currentBlobUrl && currentBlobUrl !== url) {
+    try { URL.revokeObjectURL(currentBlobUrl); } catch { /* ignore */ }
+  }
+  currentBlobUrl = url;
+}
+
+/** 关闭预览时清理 archive 状态和 blob URL */
+function cleanupArchiveState() {
+  archiveState = null;
+  setBlobUrl(null);
+}
+
 async function api<T>(url: string): Promise<T> {
   const response = await fetch(url);
   const data = response.headers.get('content-type')?.includes('application/json') ? await response.json() : ({} as T);
   if (!response.ok) throw new Error((data as { error?: string }).error || '请求失败');
   return data;
+}
+
+// URL builders：path 走 URL 段（不是 query 参数），可以直接分享 / 收藏
+//   例：/api/preview/hadoop/%E4%B8%80%E9%94%AE%E9%83%A8%E7%BD%B2/%E8%84%9A%E6%9C%AC.zip
+// encodeURI 保留 /，只对中文字符等做百分号编码
+
+/** /api/list/[prefix]；prefix 必须以 / 结尾或为空 */
+function apiListUrl(prefix: string): string {
+  if (!prefix) return '/api/list/';
+  return `/api/list/${prefix.split('/').filter(Boolean).map(encodeURIComponent).join('/')}/`;
+}
+
+/** /api/preview/[key]；key 是文件路径，不以 / 结尾 */
+function apiPreviewUrl(key: string): string {
+  return `/api/preview/${key.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
+}
+
+/** /api/download/[key]；key 是文件路径，不以 / 结尾 */
+function apiDownloadUrl(key: string): string {
+  return `/api/download/${key.split('/').filter(Boolean).map(encodeURIComponent).join('/')}`;
 }
 
 // ---------- toast ----------
@@ -381,12 +461,15 @@ function classifyPreview(mime: string, name: string): PreviewKind {
   if (m === 'application/pdf') return 'pdf';
   if (m.startsWith('audio/')) return 'audio';
   if (m.startsWith('video/')) return 'video';
+  if (SHEET_EXTS.has(ext)) return 'sheet';
   if (DOCX_EXTS.has(ext)) return 'docx';
   if (DOC_EXTS.has(ext)) return 'docx'; // 也走 docx 分支，下面有 fallback
   if (ARCHIVE_EXTS.has(ext)) return 'archive';
+  if (BINARY_EXTS.has(ext)) return 'binary'; // 已知无法内联的二进制：给下载提示而非乱码
   if (CSV_EXTS.has(ext)) return 'csv';
   if (['md', 'markdown'].includes(ext)) return 'markdown';
   if (CODE_EXTS.has(ext)) return 'code';
+  if (TEXT_EXTS.has(ext)) return 'text';
   if (m.startsWith('text/') || m === 'application/json' || m === 'application/xml' || m === 'application/javascript' || m === 'application/x-yaml' || m === 'application/ld+json') return 'text';
   return 'unknown';
 }
@@ -571,7 +654,7 @@ async function renderDocxPreview(state: PreviewState, buffer: ArrayBuffer) {
   try {
     // .doc（老二进制格式）mammoth 不支持，提前识别一下
     if (extOf(state.name) === 'doc') {
-      body.innerHTML = `<p class="drive-preview__placeholder">暂不支持 .doc（二进制）格式预览，请使用下载。</p>`;
+      body.innerHTML = `<p class="drive-preview__placeholder">暂不支持 .doc（老二进制）格式预览，请使用下载后用 WPS / Office 打开。</p>`;
       return;
     }
     const result = await mammothConvert({ arrayBuffer: buffer });
@@ -587,70 +670,380 @@ async function renderDocxPreview(state: PreviewState, buffer: ArrayBuffer) {
   }
 }
 
-async function renderArchivePreview(state: PreviewState, buffer: ArrayBuffer) {
+/** 把 sheet 数据渲染成表格（复用 CSV 表格样式，首行当表头） */
+function buildSheetTable(rows: string[][]): HTMLElement {
+  const wrap = document.createElement('div');
+  wrap.className = 'drive-preview__csv';
+  if (rows.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'drive-preview__placeholder';
+    empty.textContent = '（空工作表）';
+    wrap.appendChild(empty);
+    return wrap;
+  }
+  const table = document.createElement('table');
+  const thead = document.createElement('thead');
+  const headerTr = document.createElement('tr');
+  const colCount = Math.max(...rows.map((r) => r.length));
+  for (let i = 0; i < colCount; i++) {
+    const th = document.createElement('th');
+    th.textContent = rows[0][i] ?? '';
+    headerTr.appendChild(th);
+  }
+  thead.appendChild(headerTr);
+  table.appendChild(thead);
+  const tbody = document.createElement('tbody');
+  for (let r = 1; r < rows.length; r++) {
+    const tr = document.createElement('tr');
+    for (let c = 0; c < colCount; c++) {
+      const td = document.createElement('td');
+      td.textContent = rows[r][c] ?? '';
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  return wrap;
+}
+
+/**
+ * 表格（.xlsx/.xlsm/.xls/.ods）：交给成熟库 SheetJS 解析成表格。
+ * 动态 import —— 只有真正点开表格时才下载该 chunk，避免拖慢首屏。
+ */
+const MAX_SHEET_ROWS_PREVIEW = 300; // SheetJS 的 sheetRows：每张表只读前 N 行
+const MAX_SHEET_COLS_PREVIEW = 60;
+const MAX_SHEET_NAMES_PREVIEW = 5;
+
+async function renderSpreadsheetPreview(state: PreviewState, buffer: ArrayBuffer) {
   const body = refs.previewBody;
-  body.innerHTML = '<p class="drive-preview__placeholder">正在解压压缩包…</p>';
+  body.innerHTML = '<p class="drive-preview__placeholder">正在解析表格…</p>';
   try {
-    const zip = await JSZip.loadAsync(buffer);
-    const entries: { name: string; size: number; date: Date; dir: boolean }[] = [];
-    zip.forEach((relPath, file) => {
-      // uncompressedSize 在公开类型上未暴露，只能走 _data 内部字段
-      const internal = (file as unknown as { _data?: { uncompressedSize?: number } })._data;
-      const size = internal?.uncompressedSize ?? 0;
-      entries.push({
-        name: relPath,
-        size,
-        date: file.date || new Date(0),
-        dir: file.dir,
-      });
+    const XLSX = await import('xlsx');
+    const wb = XLSX.read(new Uint8Array(buffer), {
+      type: 'array',
+      sheetRows: MAX_SHEET_ROWS_PREVIEW,
+      cellDates: false,
     });
-    // 文件夹优先，同组内按名字排
-    entries.sort((a, b) => {
-      if (a.dir !== b.dir) return a.dir ? -1 : 1;
-      return a.name.localeCompare(b.name, 'zh-Hans-CN');
+    const names = (wb.SheetNames || []).slice(0, MAX_SHEET_NAMES_PREVIEW);
+    if (names.length === 0) throw new Error('未解析到任何工作表');
+    const root = document.createElement('div');
+    if ((wb.SheetNames || []).length > MAX_SHEET_NAMES_PREVIEW) {
+      const warn = document.createElement('p');
+      warn.className = 'drive-preview__office-warn';
+      warn.textContent = `⚠ 工作簿有 ${wb.SheetNames.length} 个工作表，仅显示前 ${MAX_SHEET_NAMES_PREVIEW} 个`;
+      root.appendChild(warn);
+    }
+    for (const name of names) {
+      const ws = wb.Sheets[name];
+      if (!ws) continue;
+      const rawRows = XLSX.utils.sheet_to_json(ws, {
+        header: 1,
+        defval: '',
+        raw: false, // 取「格式化文本」，日期/数字已经是人类可读的样子
+        blankrows: false,
+      }) as unknown[][];
+      let tooWide = false;
+      const rows: string[][] = [];
+      for (const rr of rawRows) {
+        if (rr.length > MAX_SHEET_COLS_PREVIEW) tooWide = true;
+        const row = rr
+          .slice(0, MAX_SHEET_COLS_PREVIEW)
+          .map((cell) => (cell === null || cell === undefined ? '' : String(cell)));
+        while (row.length > 0 && row[row.length - 1] === '') row.pop();
+        rows.push(row);
+      }
+      const caption = document.createElement('div');
+      caption.className = 'drive-preview__sheet-caption';
+      caption.textContent = `📊 ${name}`;
+      root.appendChild(caption);
+      if (tooWide) {
+        const note = document.createElement('p');
+        note.className = 'drive-preview__office-warn';
+        note.textContent = `⚠ 列数较多，仅显示前 ${MAX_SHEET_COLS_PREVIEW} 列`;
+        root.appendChild(note);
+      }
+      root.appendChild(buildSheetTable(rows));
+    }
+    body.replaceChildren(root);
+  } catch (err) {
+    body.innerHTML = `<p class="drive-preview__placeholder">表格解析失败：${escapeHtml(readError(err))}</p>`;
+  }
+}
+
+/**
+ * Office 预览分派（.docx 已由 renderDocxPreview 用 mammoth 单独处理）：
+ *   - .xlsx/.xlsm/.xls/.ods → SheetJS（成熟库）表格
+ *   - .odt → 最小文本提取（无成熟浏览器端库）
+ *   - .doc / .ppt（老二进制）→ 下载提示
+ *   其余演示(pptx/odp)、电子书、数据库等不会走到这里（前端按扩展名归为 binary）。
+ */
+async function renderOfficePreview(state: PreviewState, buffer: ArrayBuffer) {
+  const body = refs.previewBody;
+  const ext = extOf(state.name);
+  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'ods') {
+    await renderSpreadsheetPreview(state, buffer);
+    return;
+  }
+  if (ext === 'doc' || ext === 'ppt') {
+    body.innerHTML = `<p class="drive-preview__placeholder">暂不支持 .${ext}（老版二进制）格式预览，请使用下载后用 WPS / Office 打开。</p>`;
+    return;
+  }
+  body.innerHTML = '<p class="drive-preview__placeholder">正在解析文档…</p>';
+  let data: Awaited<ReturnType<typeof parseOfficeFile>>;
+  try {
+    data = await parseOfficeFile(state.name, buffer);
+  } catch (err) {
+    body.innerHTML = `<p class="drive-preview__placeholder">文档解析失败：${escapeHtml(readError(err))}</p>`;
+    return;
+  }
+  const root = document.createElement('div');
+  for (const w of data.warnings) {
+    const warn = document.createElement('p');
+    warn.className = 'drive-preview__office-warn';
+    warn.textContent = `⚠ ${w}`;
+    root.appendChild(warn);
+  }
+  const article = document.createElement('article');
+  article.className = 'drive-preview__markdown drive-preview__docx';
+  for (const para of data.paragraphs ?? []) {
+    const heading = /^(#{1,6})\s+(.*)$/.exec(para);
+    if (heading) {
+      const h = document.createElement(`h${Math.min(heading[1].length, 4)}`);
+      h.textContent = heading[2];
+      article.appendChild(h);
+    } else {
+      const p = document.createElement('p');
+      p.textContent = para;
+      article.appendChild(p);
+    }
+  }
+  root.appendChild(article);
+  body.replaceChildren(root);
+}
+
+/** 列出 archiveState.innerPath 这一层的直接子项（一个层级） */
+function listArchiveEntries(arc: ArchiveState): ArchiveEntry[] {
+  const out: ArchiveEntry[] = [];
+  arc.zip.forEach((relPath, file) => {
+    if (!relPath.startsWith(arc.innerPath)) return;
+    const rel = relPath.slice(arc.innerPath.length);
+    const parts = rel.split('/').filter((p) => p.length > 0);
+    if (parts.length === 0) return; // 自身
+    if (parts.length > 1) return; // 更深
+    const internal = (file as unknown as { _data?: { uncompressedSize?: number } })._data;
+    out.push({
+      name: parts[0],
+      fullPath: relPath,
+      isDir: file.dir,
+      size: file.dir ? 0 : (internal?.uncompressedSize ?? 0),
+      date: file.date || new Date(0),
     });
-    const totalUncompressed = entries.reduce((s, e) => s + e.size, 0);
-    const totalEntries = entries.length;
+  });
+  out.sort((a, b) => {
+    if (a.isDir !== b.isDir) return a.isDir ? -1 : 1;
+    return a.name.localeCompare(b.name, 'zh-Hans-CN');
+  });
+  return out;
+}
 
-    const wrap = document.createElement('div');
-    wrap.className = 'drive-preview__archive';
+/** 构建顶部面包屑：📦 zipName / [seg1] / [seg2] */
+function buildArchiveCrumb(arc: ArchiveState): HTMLElement {
+  const crumb = document.createElement('div');
+  crumb.className = 'drive-preview__archive-crumb';
 
-    const summary = document.createElement('div');
-    summary.className = 'drive-preview__archive-summary';
-    summary.innerHTML = `
-      <div><strong>${totalEntries}</strong> 个条目</div>
-      <div>解压后大小：<strong>${formatSize(totalUncompressed)}</strong></div>
-    `;
-    wrap.appendChild(summary);
+  const root = document.createElement('button');
+  root.type = 'button';
+  root.className = 'drive-preview__archive-crumb-seg';
+  root.textContent = `📦 ${arc.zipName}`;
+  root.title = `返回 ${arc.zipName} 根目录`;
+  root.addEventListener('click', () => navigateArchiveTo(''));
+  crumb.appendChild(root);
 
+  const parts = arc.innerPath.split('/').filter(Boolean);
+  let acc = '';
+  for (const part of parts) {
+    const sep = document.createElement('span');
+    sep.className = 'drive-preview__archive-crumb-sep';
+    sep.textContent = '/';
+    crumb.appendChild(sep);
+    acc = `${acc}${part}/`;
+    const seg = document.createElement('button');
+    seg.type = 'button';
+    seg.className = 'drive-preview__archive-crumb-seg';
+    seg.textContent = part;
+    seg.title = `进入 ${acc}`;
+    const target = acc;
+    seg.addEventListener('click', () => navigateArchiveTo(target));
+    crumb.appendChild(seg);
+  }
+  return crumb;
+}
+
+/** 渲染当前 archiveState 的内容（面包屑 + 列表） */
+function renderArchiveEntries() {
+  const arc = archiveState;
+  if (!arc) return;
+  const body = refs.previewBody;
+  body.innerHTML = '';
+  const wrap = document.createElement('div');
+  wrap.className = 'drive-preview__archive';
+
+  wrap.appendChild(buildArchiveCrumb(arc));
+
+  const entries = listArchiveEntries(arc);
+  const totalSize = entries.reduce((s, e) => s + (e.isDir ? 0 : e.size), 0);
+  const summary = document.createElement('div');
+  summary.className = 'drive-preview__archive-summary';
+  summary.innerHTML = `<div><strong>${entries.length}</strong> 个条目</div><div>当前层大小：<strong>${formatSize(totalSize)}</strong></div>`;
+  wrap.appendChild(summary);
+
+  if (entries.length === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'drive-preview__placeholder';
+    empty.textContent = '（空目录）';
+    wrap.appendChild(empty);
+  } else {
     const list = document.createElement('ul');
     list.className = 'drive-preview__archive-list';
-    for (const e of entries.slice(0, 500)) {
-      const li = document.createElement('li');
-      li.className = 'drive-preview__archive-item';
+    const MAX = 500;
+    for (const e of entries.slice(0, MAX)) {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'drive-preview__archive-item';
+      btn.addEventListener('click', () => onArchiveEntryClick(e));
       const icon = document.createElement('span');
       icon.className = 'drive-preview__archive-item-icon';
-      icon.innerHTML = e.dir ? ICON_FOLDER : fileIcon(e.name);
+      icon.innerHTML = e.isDir ? ICON_FOLDER : fileIcon(e.name);
       const name = document.createElement('span');
       name.className = 'drive-preview__archive-item-name';
-      name.textContent = e.name;
+      name.textContent = e.isDir ? `${e.name}/` : e.name;
+      name.title = e.fullPath;
       const size = document.createElement('span');
       size.className = 'drive-preview__archive-item-size';
-      size.textContent = e.dir ? '—' : formatSize(e.size);
-      li.append(icon, name, size);
-      list.appendChild(li);
+      size.textContent = e.isDir ? '—' : formatSize(e.size);
+      btn.append(icon, name, size);
+      list.appendChild(btn);
     }
-    if (entries.length > 500) {
+    if (entries.length > MAX) {
       const more = document.createElement('li');
       more.className = 'drive-preview__archive-more';
-      more.textContent = `（还有 ${entries.length - 500} 项未显示，请下载后用本地工具浏览）`;
+      more.textContent = `（还有 ${entries.length - MAX} 项未显示，请下载后用本地工具浏览）`;
       list.appendChild(more);
     }
     wrap.appendChild(list);
-    body.replaceChildren(wrap);
-  } catch (err) {
-    body.innerHTML = `<p class="drive-preview__placeholder">压缩包解析失败：${escapeHtml(readError(err))}<br><br>文件可能不是有效的 ZIP，或已损坏。</p>`;
   }
+  body.replaceChildren(wrap);
+}
+
+function navigateArchiveTo(innerPath: string) {
+  if (!archiveState) return;
+  archiveState = { ...archiveState, innerPath };
+  renderArchiveEntries();
+}
+
+/** zip 内条目点击：文件夹 → 进入；文件 → 预览；嵌套 zip → 替换 archiveState */
+async function onArchiveEntryClick(entry: ArchiveEntry) {
+  if (!archiveState) return;
+  if (entry.isDir) {
+    navigateArchiveTo(entry.fullPath);
+    return;
+  }
+  // 嵌套 zip？直接打开为新的 archive 视图
+  const kind = fileKind(entry.name);
+  if (kind === 'archive') {
+    await openNestedArchive(entry);
+    return;
+  }
+  await openArchiveFile(entry);
+}
+
+/** 从 zip 内取文件 → blob URL → 调 openPreview(sourceUrl) */
+async function openArchiveFile(entry: ArchiveEntry) {
+  if (!archiveState) return;
+  const file = archiveState.zip.file(entry.fullPath);
+  if (!file) {
+    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
+    return;
+  }
+  refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">正在解压文件…</p>';
+  try {
+    const buffer = await file.async('uint8array');
+    const mime = guessMime(entry.name);
+    // 用 slice() 产生一个不带泛型参数的 Uint8Array，TS Blob 构造签名才能接受
+    const blob = new Blob([buffer.slice()], { type: mime });
+    const url = URL.createObjectURL(blob);
+    setBlobUrl(url);
+    const kind = classifyPreview(mime, entry.name);
+    await openPreview({
+      key: `${archiveState.zipKey}!${entry.fullPath}`,
+      name: entry.name,
+      kind,
+      mime,
+      size: entry.size,
+      uploaded: entry.date && entry.date.getTime() > 0 ? entry.date.toISOString() : undefined,
+      sourceUrl: url,
+      sourceLabel: `ZIP 内 · ${archiveState.zipName}`,
+    });
+  } catch (err) {
+    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">解压失败：${escapeHtml(readError(err))}</p>`;
+  }
+}
+
+/** 嵌套 zip：用内层 zip 替换当前 archiveState */
+async function openNestedArchive(entry: ArchiveEntry) {
+  if (!archiveState) return;
+  const file = archiveState.zip.file(entry.fullPath);
+  if (!file) {
+    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
+    return;
+  }
+  refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">正在解压嵌套压缩包…</p>';
+  try {
+    const buffer = await file.async('uint8array');
+    const innerZip = await JSZip.loadAsync(buffer);
+    archiveState = {
+      zip: innerZip,
+      zipKey: `${archiveState.zipKey}!${entry.fullPath}`,
+      zipName: entry.name,
+      innerPath: '',
+    };
+    renderArchiveEntries();
+  } catch (err) {
+    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">嵌套压缩包解析失败：${escapeHtml(readError(err))}</p>`;
+  }
+}
+
+/** 按扩展名猜 mime（zip 内文件没服务端 metadata） */
+function guessMime(name: string): string {
+  const ext = extOf(name);
+  const map: Record<string, string> = {
+    txt: 'text/plain', md: 'text/markdown', mdown: 'text/markdown', markdown: 'text/markdown',
+    json: 'application/json', xml: 'application/xml', yaml: 'application/x-yaml', yml: 'application/x-yaml',
+    csv: 'text/csv', tsv: 'text/tab-separated-values',
+    js: 'text/javascript', mjs: 'text/javascript', cjs: 'text/javascript', jsx: 'text/javascript',
+    ts: 'text/typescript', tsx: 'text/typescript',
+    css: 'text/css', scss: 'text/css', less: 'text/css',
+    html: 'text/html', htm: 'text/html', vue: 'text/html', svelte: 'text/html',
+    svg: 'image/svg+xml',
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif',
+    webp: 'image/webp', bmp: 'image/bmp', avif: 'image/avif',
+    mp3: 'audio/mpeg', wav: 'audio/wav', ogg: 'audio/ogg', flac: 'audio/flac', m4a: 'audio/mp4',
+    mp4: 'video/mp4', webm: 'video/webm', mov: 'video/quicktime',
+    pdf: 'application/pdf',
+    docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    doc: 'application/msword',
+    odt: 'application/vnd.oasis.opendocument.text',
+    xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    xlsm: 'application/vnd.ms-excel.sheet.macroEnabled.12',
+    xls: 'application/vnd.ms-excel',
+    ods: 'application/vnd.oasis.opendocument.spreadsheet',
+    pptx: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    ppt: 'application/vnd.ms-powerpoint',
+    odp: 'application/vnd.oasis.opendocument.presentation',
+    zip: 'application/zip',
+  };
+  return map[ext] ?? 'application/octet-stream';
 }
 
 function showPreviewError(message: string, noteTone: 'info' | 'warn' = 'warn') {
@@ -664,7 +1057,10 @@ function checkSizeLimit(state: PreviewState): string | null {
   if (state.kind === 'archive' && size > MAX_ARCHIVE_PREVIEW_BYTES) {
     return `压缩包 ${formatSize(size)} 超过预览上限 ${formatSize(MAX_ARCHIVE_PREVIEW_BYTES)}，请下载后用本地工具浏览。`;
   }
-  if ((state.kind === 'text' || state.kind === 'code' || state.kind === 'markdown' || state.kind === 'csv' || state.kind === 'docx') && size > MAX_TEXT_PREVIEW_BYTES) {
+  if ((state.kind === 'docx' || state.kind === 'sheet') && size > MAX_OFFICE_PREVIEW_BYTES) {
+    return `文档 ${formatSize(size)} 超过 Office 预览上限 ${formatSize(MAX_OFFICE_PREVIEW_BYTES)}，请下载后用本地软件打开。`;
+  }
+  if ((state.kind === 'text' || state.kind === 'code' || state.kind === 'markdown' || state.kind === 'csv' || state.kind === 'unknown') && size > MAX_TEXT_PREVIEW_BYTES) {
     return `文档 ${formatSize(size)} 超过文本预览上限 ${formatSize(MAX_TEXT_PREVIEW_BYTES)}，请下载查看完整内容。`;
   }
   if (size > MAX_PREVIEW_BYTES) {
@@ -673,11 +1069,27 @@ function checkSizeLimit(state: PreviewState): string | null {
   return null;
 }
 
+/** 从失败的预览响应里尽量取出可读原因（如 413 时服务端会带 JSON 说明） */
+async function previewErrorMessage(res: Response): Promise<string> {
+  const base = `HTTP ${res.status}`;
+  try {
+    const ct = res.headers.get('content-type') || '';
+    if (!ct.includes('json')) return base;
+    const body = (await res.clone().json()) as { error?: string };
+    return body && typeof body.error === 'string' && body.error ? `${base} · ${body.error}` : base;
+  } catch {
+    return base;
+  }
+}
+
 async function openPreview(state: PreviewState) {
   previewState = state;
   refs.previewName.textContent = state.name;
   setPreviewNote(previewMetaLine(state));
-  refs.previewDownload.href = `/api/download?path=${encodeURIComponent(state.key)}`;
+  // 下载链接：嵌套文件用 blob URL（API 路径无效），顶层文件用 /api/download/<key>
+  refs.previewDownload.href = state.sourceUrl || apiDownloadUrl(state.key);
+  if (state.sourceUrl) refs.previewDownload.setAttribute('download', state.name);
+  else refs.previewDownload.removeAttribute('download');
   setGalleryNav(Boolean(state.gallery));
   refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">载入中…</p>';
   if (!refs.preview.open) refs.preview.showModal();
@@ -689,42 +1101,69 @@ async function openPreview(state: PreviewState) {
     return;
   }
 
-  const url = `/api/preview?path=${encodeURIComponent(state.key)}`;
+  const url = state.sourceUrl || apiPreviewUrl(state.key);
+
+  // 已知二进制 / 其他压缩格式：无法在浏览器内联，直接提示下载（不必发请求）
+  if (state.kind === 'binary') {
+    showPreviewError(`「.${extOf(state.name)}」格式无法在浏览器中直接预览，请下载后使用本地软件打开。`);
+    return;
+  }
 
   // 媒体类：直接走 URL，浏览器自己处理 Range
   if (state.kind === 'image' || state.kind === 'pdf' || state.kind === 'audio' || state.kind === 'video') {
     try {
-      const probe = await fetch(url, { headers: { Range: 'bytes=0-0' } });
-      if (!probe.ok && probe.status !== 206) {
-        showPreviewError(`预览失败：HTTP ${probe.status}`);
-        return;
+      // 对 sourceUrl（blob URL）不发 Range 探测；API URL 才探测
+      if (state.sourceUrl) {
+        renderMediaPreview(state, url);
+      } else {
+        const probe = await fetch(url, { headers: { Range: 'bytes=0-0' } });
+        if (!probe.ok && probe.status !== 206) {
+          showPreviewError(`预览失败：${await previewErrorMessage(probe)}`);
+          return;
+        }
+        renderMediaPreview(state, url);
       }
-      renderMediaPreview(state, url);
     } catch (err) {
       showPreviewError(`请求失败：${escapeHtml(readError(err))}`);
     }
     return;
   }
 
-  // 二进制类：拿 ArrayBuffer 本地解析。
-  // 这里走 /api/download 而不是 /api/preview——后者会按 mime 拒绝非内联类型（zip/docx 都是 415）。
-  // /api/download 是无脑 bytes 透传，对 fetch() 来说 Content-Disposition: attachment 不会触发下载弹窗。
-  if (state.kind === 'docx' || state.kind === 'archive') {
-    const downloadUrl = `/api/download?path=${encodeURIComponent(state.key)}`;
+  // docx / xlsx / pptx / ODF：拿 ArrayBuffer 本地解析（docx 用 mammoth，其余用内置解析器）
+  if (state.kind === 'docx' || state.kind === 'sheet') {
     try {
-      const res = await fetch(downloadUrl);
+      const res = await fetch(url);
       if (!res.ok) {
-        showPreviewError(`预览失败：HTTP ${res.status}`);
+        showPreviewError(`预览失败：${await previewErrorMessage(res)}`);
         return;
       }
       const buffer = await res.arrayBuffer();
-      if (state.kind === 'docx') {
+      if (state.kind === 'docx' && extOf(state.name) === 'docx') {
         await renderDocxPreview(state, buffer);
       } else {
-        await renderArchivePreview(state, buffer);
+        await renderOfficePreview(state, buffer);
       }
     } catch (err) {
       showPreviewError(`请求失败：${escapeHtml(readError(err))}`);
+    }
+    return;
+  }
+
+  // 压缩包：仅在「顶层 zip」走这条分支（archiveState.zip 是新打开的）。
+  // 嵌套 zip 由 openNestedArchive 处理（直接替换 archiveState）。
+  if (state.kind === 'archive' && !archiveState) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) {
+        showPreviewError(`预览失败：${await previewErrorMessage(res)}`);
+        return;
+      }
+      const buffer = await res.arrayBuffer();
+      const zip = await JSZip.loadAsync(buffer);
+      archiveState = { zip, zipKey: state.key, zipName: state.name, innerPath: '' };
+      renderArchiveEntries();
+    } catch (err) {
+      showPreviewError(`加载压缩包失败：${escapeHtml(readError(err))}`);
     }
     return;
   }
@@ -733,7 +1172,7 @@ async function openPreview(state: PreviewState) {
   try {
     const res = await fetch(url);
     if (!res.ok) {
-      showPreviewError(`预览失败：HTTP ${res.status}`);
+      showPreviewError(`预览失败：${await previewErrorMessage(res)}`);
       return;
     }
     const text = await res.text();
@@ -744,7 +1183,7 @@ async function openPreview(state: PreviewState) {
     } else if (state.kind === 'csv') {
       setPreviewNote(previewMetaLine(state) + ' · CSV/TSV 表格');
     } else {
-      setPreviewNote(previewMetaLine(state) + ' · 文本预览（最多 2 MB）');
+      setPreviewNote(previewMetaLine(state) + ` · 文本/未知类型预览（最多 ${formatSize(MAX_TEXT_PREVIEW_BYTES)}）`);
     }
     await renderTextPreview(state, text);
   } catch (err) {
@@ -856,7 +1295,7 @@ function makeRow(item: DriveItem): HTMLElement {
   } else {
     iconWrap.innerHTML = fileIcon(name);
     const kind = fileKind(name);
-    iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' ? 'code' : kind;
+    iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' || kind === 'sheet' ? 'code' : kind;
   }
   (tpl.querySelector('[data-name]') as HTMLElement).textContent = name;
   (tpl.querySelector('[data-meta]') as HTMLElement).textContent = fileMetaLine(item);
@@ -903,7 +1342,7 @@ function makeRow(item: DriveItem): HTMLElement {
       ),
     );
     actions.appendChild(
-      makeLinkAction(ICON_DOWNLOAD, '下载', `/api/download?path=${encodeURIComponent(item.key)}`, true),
+      makeLinkAction(ICON_DOWNLOAD, '下载', apiDownloadUrl(item.key), true),
     );
   }
   return tpl;
@@ -943,7 +1382,7 @@ async function load() {
   searchIndexScope = '';
   searchIndexPromise = null;
   try {
-    const data = await api<DriveListResponse>(`/api/list?prefix=${encodeURIComponent(prefix)}`);
+    const data = await api<DriveListResponse>(apiListUrl(prefix));
     lastList = data;
     render(data);
   } catch (error) {
@@ -1008,7 +1447,7 @@ function open(key: string) {
 async function collectFiles(rootKey: string, onProgress?: (count: number) => void): Promise<{ key: string; relPath: string }[]> {
   const out: { key: string; relPath: string }[] = [];
   async function walk(p: string) {
-    const data = await api<DriveListResponse>(`/api/list?prefix=${encodeURIComponent(p)}`);
+    const data = await api<DriveListResponse>(apiListUrl(p));
     for (const f of data.folders) {
       onProgress?.(out.length);
       await walk(f.key);
@@ -1042,7 +1481,7 @@ async function packFolder(folderKey: string, folderName: string) {
 
   const inflight = files.map((f) => ({
     name: `${folderName}/${f.relPath}`,
-    responsePromise: fetch(`/api/download?path=${encodeURIComponent(f.key)}`),
+    responsePromise: fetch(apiDownloadUrl(f.key)),
   }));
 
   async function* inputStream() {
@@ -1102,7 +1541,7 @@ async function packSelected() {
 
   const inflight = items.map((it) => ({
     name: it.name,
-    responsePromise: fetch(`/api/download?path=${encodeURIComponent(it.key)}`),
+    responsePromise: fetch(apiDownloadUrl(it.key)),
   }));
 
   async function* inputStream() {
@@ -1143,7 +1582,7 @@ async function buildIndex(scope: string): Promise<Map<string, IndexEntry>> {
     const queue: string[] = [scope];
     while (queue.length) {
       const p = queue.shift()!;
-      const data = await api<DriveListResponse>(`/api/list?prefix=${encodeURIComponent(p)}`);
+      const data = await api<DriveListResponse>(apiListUrl(p));
       for (const f of data.folders) {
         idx.set(f.key, { key: f.key, name: f.name, folder: true, parent: p, uploaded: f.uploaded, scopePrefix: scope });
         queue.push(f.key);
@@ -1202,7 +1641,7 @@ function renderSearchResults(results: IndexEntry[], query: string) {
     iconWrap.innerHTML = e.folder ? ICON_FOLDER : fileIcon(e.name);
     if (!e.folder) {
       const kind = fileKind(e.name);
-      iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' ? 'code' : kind;
+      iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' || kind === 'sheet' || kind === 'slides' ? 'code' : kind;
     }
 
     const body = document.createElement('div');
@@ -1347,6 +1786,7 @@ function bind() {
   });
 
   refs.previewClose?.addEventListener('click', () => refs.preview?.close());
+  refs.preview?.addEventListener('close', () => cleanupArchiveState());
   refs.previewPrev?.addEventListener('click', () => navigateGallery(-1));
   refs.previewNext?.addEventListener('click', () => navigateGallery(1));
   refs.preview?.addEventListener('click', (e) => {

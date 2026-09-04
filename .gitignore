@@ -1,6 +1,7 @@
 node_modules/
 .dev.vars
 .wrangler/
+tmp/
 
 # 构建产物
 dist/
@@ -11,3 +12,5 @@ functions/_config.generated.json
 
 # 旧的静态前端（Astro 重构前的版本，仅作存档）
 public/_legacy/
+
+test/

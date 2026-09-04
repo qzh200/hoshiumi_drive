@@ -32,7 +32,8 @@ async function fetchAndCheck(label, url, opts = {}, extraCheck) {
 }
 
 async function listJson(prefix) {
-  const r = await fetch(`${base}/api/list?prefix=${encodeURIComponent(prefix)}`);
+  // 新 URL 形态：path 在 URL 段里（encodeURI 保留 /）
+  const r = await fetch(`${base}/api/list/${encodeURI(prefix)}`);
   if (!r.ok) return null;
   return r.json();
 }
@@ -61,7 +62,7 @@ async function findFirstFile(maxDepth = 4, maxItems = 200) {
 async function main() {
   await fetchAndCheck('GET /', base + '/');
 
-  const root = await fetchAndCheck('GET /api/list?prefix=', base + '/api/list?prefix=');
+  const root = await fetchAndCheck('GET /api/list/', base + '/api/list/');
   let rootData;
   try { rootData = JSON.parse(root.body); } catch { rootData = { files: [], folders: [] }; }
   console.log(
@@ -74,26 +75,32 @@ async function main() {
   } else {
     console.log(`   sample file: ${sample.key}`);
 
-    const dl = await fetchAndCheck(`GET /api/download?path=${sample.key}`,
-      `${base}/api/download?path=${encodeURIComponent(sample.key)}`);
+    const dl = await fetchAndCheck(`GET /api/download/${sample.key}`,
+      `${base}/api/download/${encodeURI(sample.key)}`);
     const cd = dl.res.headers.get('content-disposition') || '';
     console.log(`   ${cd.toLowerCase().includes('attachment') ? '✅' : '❌'} attachment header: ${cd}`);
 
-    const prev = await fetchAndCheck(`GET /api/preview?path=${sample.key}`,
-      `${base}/api/preview?path=${encodeURIComponent(sample.key)}`);
+    const prev = await fetchAndCheck(`GET /api/preview/${sample.key}`,
+      `${base}/api/preview/${encodeURI(sample.key)}`);
     const cdPrev = prev.res.headers.get('content-disposition') || '';
     console.log(`   ${!cdPrev.toLowerCase().includes('attachment') ? '✅' : '❌'} preview not attachment (content-type=${prev.res.headers.get('content-type')})`);
 
-    await fetchAndCheck(`GET /api/download Range: bytes=0-15`,
-      `${base}/api/download?path=${encodeURIComponent(sample.key)}`,
+    await fetchAndCheck(`GET /api/download/${sample.key} Range: bytes=0-15`,
+      `${base}/api/download/${encodeURI(sample.key)}`,
       { status: 206 },
       (res) => {
         console.log(`   content-range=${res.headers.get('content-range')}; accept-ranges=${res.headers.get('accept-ranges')}`);
       });
   }
 
-  await fetchAndCheck('GET /api/list?prefix=../etc/passwd (rejected)',
-    `${base}/api/list?prefix=../etc/passwd`, { status: 400 });
+  await fetchAndCheck('GET /api/list/../etc/passwd (rejected)',
+    `${base}/api/list/${encodeURI('../etc/passwd')}`, { status: 400 });
+
+  // zip 直接走 preview 端点（不应再 415 —— 统一端点返回 raw bytes）
+  const zipSample = 'hadoop/一键部署脚本/脚本压缩包.zip';
+  const zipPrev = await fetchAndCheck(`GET /api/preview/${zipSample} (zip raw bytes)`,
+    `${base}/api/preview/${encodeURI(zipSample)}`);
+  console.log(`   zip preview size: ${zipPrev.res.headers.get('content-length')} bytes; status ${zipPrev.res.status}`);
 
   // 旧端点：Cloudflare Pages 没有匹配 function 时会走 SPA fallback 返回 HTML，
   // 这本身已经是「不存在」的信号；只要不是 JSON 业务响应就算「已移除」
