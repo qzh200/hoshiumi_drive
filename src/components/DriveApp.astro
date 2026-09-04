@@ -56,7 +56,7 @@ const animated = config.animation.enabled && config.animation.entrance;
   <button class="drive-btn drive-btn--ghost" type="button" data-actionbar-clear>清除</button>
 </div>
 
-<!-- 文件预览 dialog -->
+<!-- 文件预览 dialog（顶层文件 / ZIP 内容浏览器共用） -->
 <dialog class="drive-preview" data-preview aria-label="文件预览">
   <header class="drive-preview__bar">
     <div class="drive-preview__title" data-preview-name>预览</div>
@@ -73,13 +73,45 @@ const animated = config.animation.enabled && config.animation.entrance;
         </svg>
         <span>下载</span>
       </a>
-      <button class="drive-btn drive-btn--primary" data-preview-close type="button">关闭</button>
+      <button class="drive-btn drive-btn--primary drive-preview__close" data-preview-close type="button" aria-label="关闭预览" title="关闭预览">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" class="drive-btn__icon" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        <span>关闭</span>
+      </button>
     </div>
   </header>
   <div class="drive-preview__body" data-preview-body>
     <p class="drive-preview__placeholder">载入中…</p>
   </div>
   <p class="drive-preview__note" data-preview-note role="status"></p>
+</dialog>
+
+<!-- ZIP 内文件预览 dialog（独立层，关闭不影响外层 ZIP 浏览器） -->
+<dialog class="drive-preview drive-preview--inner" data-preview-inner aria-label="ZIP 内文件预览">
+  <header class="drive-preview__bar">
+    <div class="drive-preview__title" data-preview-inner-name>预览</div>
+    <div class="drive-preview__actions">
+      <button class="drive-btn drive-btn--ghost drive-preview__nav" data-preview-inner-prev type="button" title="上一张" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon"><path d="M15 18l-6-6 6-6"/></svg>
+      </button>
+      <button class="drive-btn drive-btn--ghost drive-preview__nav" data-preview-inner-next type="button" title="下一张" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon"><path d="M9 6l6 6-6 6"/></svg>
+      </button>
+      <a class="drive-btn drive-btn--ghost" data-preview-inner-download href="#" download>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" class="drive-btn__icon">
+          <path d="M12 4v12M6 12l6 6 6-6M4 20h16" />
+        </svg>
+        <span>下载</span>
+      </a>
+      <button class="drive-btn drive-btn--primary drive-preview__close" data-preview-inner-close type="button" aria-label="关闭预览" title="关闭预览">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" class="drive-btn__icon" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+        <span>关闭</span>
+      </button>
+    </div>
+  </header>
+  <div class="drive-preview__body" data-preview-inner-body>
+    <p class="drive-preview__placeholder">载入中…</p>
+  </div>
+  <p class="drive-preview__note" data-preview-inner-note role="status"></p>
 </dialog>
 
 <!-- 搜索 dialog -->
@@ -92,7 +124,10 @@ const animated = config.animation.enabled && config.animation.entrance;
       </svg>
       <input class="drive-search__input" data-search-input type="search" placeholder="输入文件名（搜索当前目录及子目录）" autocomplete="off" spellcheck="false" />
     </div>
-    <button class="drive-btn drive-btn--ghost" data-search-close type="button">关闭</button>
+    <button class="drive-btn drive-btn--primary drive-search__close" data-search-close type="button" aria-label="关闭搜索" title="关闭搜索">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" class="drive-btn__icon" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      <span>关闭</span>
+    </button>
   </header>
   <p class="drive-search__status" data-search-status role="status"></p>
   <ul class="drive-search__results" data-search-results></ul>

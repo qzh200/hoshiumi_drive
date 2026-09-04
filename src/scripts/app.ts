@@ -37,7 +37,6 @@ import go from 'highlight.js/lib/languages/go';
 import sql from 'highlight.js/lib/languages/sql';
 import { convertToHtml as mammothConvert } from 'mammoth';
 import JSZip from 'jszip';
-import { parseOfficeFile } from './office-parser';
 import 'highlight.js/styles/atom-one-dark.css';
 
 hljs.registerLanguage('javascript', javascript);
@@ -178,12 +177,13 @@ const CODE_EXTS = new Set([
   'json', 'jsonc', 'json5',
   'properties', 'tex', 'bat', 'cmd', 'cs', 'pl', 'vbs', 'dockerfile', 'cfg',
 ]);
-const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'heic', 'ico', 'svg']);
-const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'mkv', 'avi', 'm4v']);
-const AUDIO_EXTS = new Set(['mp3', 'wav', 'flac', 'ogg', 'm4a', 'opus', 'aac']);
+// 浏览器可直接解码渲染的媒体格式（其余如 mkv/avi/heic 无法内联，归 BINARY 提示下载）
+const IMAGE_EXTS = new Set(['png', 'jpg', 'jpeg', 'gif', 'webp', 'bmp', 'avif', 'ico', 'svg']);
+const VIDEO_EXTS = new Set(['mp4', 'webm', 'mov', 'm4v', 'ogv']);
+const AUDIO_EXTS = new Set(['mp3', 'wav', 'flac', 'ogg', 'oga', 'm4a', 'opus', 'aac']);
 const ARCHIVE_EXTS = new Set(['zip', 'jar', 'apk', 'war']);
 // 已知的「不支持在线预览」的类型：给明确的下载提示，而不是乱码或走复杂解析。
-// 演示（ppt/pptx/odp）、数据库（db/sqlite*）、电子书（epub/mobi/azw*）等一律归此类。
+// 演示（ppt/pptx/odp）、文档开放格式(odt)、数据库（db/sqlite*）、电子书（epub/mobi/azw*）等一律归此类。
 const BINARY_EXTS = new Set([
   'rar', '7z', 'zipx', 'zst', 'tar', 'gz', 'tgz', 'bz2', 'xz', 'deb', 'dmg', 'iso', 'img',
   'exe', 'dll', 'so', 'dylib', 'bin', 'dat', 'pyc', 'pyo', 'class', 'o', 'a', 'lib', 'obj',
@@ -191,12 +191,16 @@ const BINARY_EXTS = new Set([
   'ttf', 'otf', 'eot',
   // 演示
   'ppt', 'pptx', 'odp',
+  // 文字处理开放格式
+  'odt',
   // 电子书
   'epub', 'mobi', 'azw', 'azw3', 'fb2', 'djvu',
+  // 浏览器解不了的媒体/图片容器
+  'mkv', 'avi', 'heic', 'ts', 'flv', 'wmv', 'rmvb', 'vob', '3gp', 'amr', 'mid', 'midi',
 ]);
 const SHEET_EXTS = new Set(['xlsx', 'xlsm', 'ods', 'xls']);
 const TEXT_EXTS = new Set(['txt', 'md', 'markdown', 'log', 'csv', 'tsv', 'ini', 'conf', 'env', 'rst', 'rtf', 'm3u8', 'example']);
-const DOCX_EXTS = new Set(['docx', 'odt']);
+const DOCX_EXTS = new Set(['docx']);
 const DOC_EXTS = new Set(['doc']);
 const CSV_EXTS = new Set(['csv', 'tsv']);
 
@@ -250,6 +254,7 @@ const refs = {
   notice: $('[data-notice]') as HTMLElement,
   rowTpl: $('[data-row-template]') as HTMLTemplateElement,
   toasts: $('[data-toasts]') as HTMLElement,
+  // 外层预览 dialog：顶层文件预览 + ZIP 内容浏览器共用
   preview: $('[data-preview]') as HTMLDialogElement,
   previewName: $('[data-preview-name]') as HTMLElement,
   previewBody: $('[data-preview-body]') as HTMLElement,
@@ -258,6 +263,15 @@ const refs = {
   previewClose: $('[data-preview-close]') as HTMLButtonElement,
   previewPrev: $('[data-preview-prev]') as HTMLButtonElement,
   previewNext: $('[data-preview-next]') as HTMLButtonElement,
+  // 内层预览 dialog：专门承载 ZIP 内文件预览；独立于外层，关闭不影响 ZIP 浏览器
+  previewInner: $('[data-preview-inner]') as HTMLDialogElement,
+  previewInnerName: $('[data-preview-inner-name]') as HTMLElement,
+  previewInnerBody: $('[data-preview-inner-body]') as HTMLElement,
+  previewInnerNote: $('[data-preview-inner-note]') as HTMLElement,
+  previewInnerDownload: $('[data-preview-inner-download]') as HTMLAnchorElement,
+  previewInnerClose: $('[data-preview-inner-close]') as HTMLButtonElement,
+  previewInnerPrev: $('[data-preview-inner-prev]') as HTMLButtonElement,
+  previewInnerNext: $('[data-preview-inner-next]') as HTMLButtonElement,
   actionbar: $('[data-actionbar]') as HTMLElement,
   actionbarCount: $('[data-actionbar-count]') as HTMLElement,
   actionbarAll: $('[data-actionbar-all]') as HTMLButtonElement,
@@ -271,6 +285,47 @@ const refs = {
   searchStatus: $('[data-search-status]') as HTMLElement,
   searchResults: $('[data-search-results]') as HTMLElement,
 };
+
+/**
+ * 当前预览 dialog 的 DOM 引用。
+ * - 顶层文件预览 / ZIP 内容浏览器 → outer
+ * - ZIP 内文件预览 → inner（独立层，关闭时只清 blob URL，不动外层 archive state）
+ * 渲染类辅助函数（setPreviewNote / renderMediaPreview / ...）通过访问 activePreview 写入正确的 dialog。
+ */
+interface PreviewDom {
+  dialog: HTMLDialogElement;
+  name: HTMLElement;
+  body: HTMLElement;
+  note: HTMLElement;
+  download: HTMLAnchorElement;
+  close: HTMLButtonElement;
+  prev: HTMLButtonElement;
+  next: HTMLButtonElement;
+}
+
+const previewDom: Record<'outer' | 'inner', PreviewDom> = {
+  outer: {
+    dialog: refs.preview,
+    name: refs.previewName,
+    body: refs.previewBody,
+    note: refs.previewNote,
+    download: refs.previewDownload,
+    close: refs.previewClose,
+    prev: refs.previewPrev,
+    next: refs.previewNext,
+  },
+  inner: {
+    dialog: refs.previewInner,
+    name: refs.previewInnerName,
+    body: refs.previewInnerBody,
+    note: refs.previewInnerNote,
+    download: refs.previewInnerDownload,
+    close: refs.previewInnerClose,
+    prev: refs.previewInnerPrev,
+    next: refs.previewInnerNext,
+  },
+};
+let activePreview: PreviewDom = previewDom.outer;
 
 // ---------- 工具 ----------
 
@@ -457,17 +512,18 @@ function toast(title: string, detail?: string): ToastHandle {
 function classifyPreview(mime: string, name: string): PreviewKind {
   const m = (mime || '').toLowerCase();
   const ext = extOf(name);
-  if (m.startsWith('image/')) return 'image';
-  if (m === 'application/pdf') return 'pdf';
-  if (m.startsWith('audio/')) return 'audio';
-  if (m.startsWith('video/')) return 'video';
+  // 行点击时只有文件名、没有 mime，因此媒体必须同时支持「mime 识别」和「扩展名识别」
+  if (m.startsWith('image/') || IMAGE_EXTS.has(ext)) return 'image';
+  if (m === 'application/pdf' || ext === 'pdf') return 'pdf';
+  if (m.startsWith('audio/') || AUDIO_EXTS.has(ext)) return 'audio';
+  if (m.startsWith('video/') || VIDEO_EXTS.has(ext)) return 'video';
   if (SHEET_EXTS.has(ext)) return 'sheet';
   if (DOCX_EXTS.has(ext)) return 'docx';
   if (DOC_EXTS.has(ext)) return 'docx'; // 也走 docx 分支，下面有 fallback
   if (ARCHIVE_EXTS.has(ext)) return 'archive';
   if (BINARY_EXTS.has(ext)) return 'binary'; // 已知无法内联的二进制：给下载提示而非乱码
   if (CSV_EXTS.has(ext)) return 'csv';
-  if (['md', 'markdown'].includes(ext)) return 'markdown';
+  if (['md', 'markdown'].includes(ext) || m === 'text/markdown' || m === 'text/x-markdown') return 'markdown';
   if (CODE_EXTS.has(ext)) return 'code';
   if (TEXT_EXTS.has(ext)) return 'text';
   if (m.startsWith('text/') || m === 'application/json' || m === 'application/xml' || m === 'application/javascript' || m === 'application/x-yaml' || m === 'application/ld+json') return 'text';
@@ -493,18 +549,18 @@ function languageFor(name: string): string | null {
 }
 
 function setPreviewNote(text: string, tone?: 'info' | 'warn') {
-  refs.previewNote.textContent = text;
-  if (tone) refs.previewNote.dataset.tone = tone;
-  else refs.previewNote.removeAttribute('data-tone');
+  activePreview.note.textContent = text;
+  if (tone) activePreview.note.dataset.tone = tone;
+  else activePreview.note.removeAttribute('data-tone');
 }
 
 function setGalleryNav(visible: boolean) {
-  refs.previewPrev.hidden = !visible;
-  refs.previewNext.hidden = !visible;
+  activePreview.prev.hidden = !visible;
+  activePreview.next.hidden = !visible;
 }
 
 function renderMediaPreview(state: PreviewState, url: string) {
-  const body = refs.previewBody;
+  const body = activePreview.body;
   body.innerHTML = '';
   if (state.kind === 'image') {
     const img = document.createElement('img');
@@ -539,7 +595,7 @@ function renderMediaPreview(state: PreviewState, url: string) {
 }
 
 async function renderTextPreview(state: PreviewState, text: string) {
-  const body = refs.previewBody;
+  const body = activePreview.body;
   body.innerHTML = '';
   if (state.kind === 'markdown') {
     const wrap = document.createElement('article');
@@ -649,7 +705,7 @@ function parseDelimited(text: string, delimiter: string): string[][] {
 }
 
 async function renderDocxPreview(state: PreviewState, buffer: ArrayBuffer) {
-  const body = refs.previewBody;
+  const body = activePreview.body;
   body.innerHTML = '<p class="drive-preview__placeholder">正在解析 Word 文档…</p>';
   try {
     // .doc（老二进制格式）mammoth 不支持，提前识别一下
@@ -715,8 +771,8 @@ const MAX_SHEET_ROWS_PREVIEW = 300; // SheetJS 的 sheetRows：每张表只读�
 const MAX_SHEET_COLS_PREVIEW = 60;
 const MAX_SHEET_NAMES_PREVIEW = 5;
 
-async function renderSpreadsheetPreview(state: PreviewState, buffer: ArrayBuffer) {
-  const body = refs.previewBody;
+async function renderSpreadsheetPreview(buffer: ArrayBuffer) {
+  const body = activePreview.body;
   body.innerHTML = '<p class="drive-preview__placeholder">正在解析表格…</p>';
   try {
     const XLSX = await import('xlsx');
@@ -769,57 +825,6 @@ async function renderSpreadsheetPreview(state: PreviewState, buffer: ArrayBuffer
   } catch (err) {
     body.innerHTML = `<p class="drive-preview__placeholder">表格解析失败：${escapeHtml(readError(err))}</p>`;
   }
-}
-
-/**
- * Office 预览分派（.docx 已由 renderDocxPreview 用 mammoth 单独处理）：
- *   - .xlsx/.xlsm/.xls/.ods → SheetJS（成熟库）表格
- *   - .odt → 最小文本提取（无成熟浏览器端库）
- *   - .doc / .ppt（老二进制）→ 下载提示
- *   其余演示(pptx/odp)、电子书、数据库等不会走到这里（前端按扩展名归为 binary）。
- */
-async function renderOfficePreview(state: PreviewState, buffer: ArrayBuffer) {
-  const body = refs.previewBody;
-  const ext = extOf(state.name);
-  if (ext === 'xlsx' || ext === 'xlsm' || ext === 'xls' || ext === 'ods') {
-    await renderSpreadsheetPreview(state, buffer);
-    return;
-  }
-  if (ext === 'doc' || ext === 'ppt') {
-    body.innerHTML = `<p class="drive-preview__placeholder">暂不支持 .${ext}（老版二进制）格式预览，请使用下载后用 WPS / Office 打开。</p>`;
-    return;
-  }
-  body.innerHTML = '<p class="drive-preview__placeholder">正在解析文档…</p>';
-  let data: Awaited<ReturnType<typeof parseOfficeFile>>;
-  try {
-    data = await parseOfficeFile(state.name, buffer);
-  } catch (err) {
-    body.innerHTML = `<p class="drive-preview__placeholder">文档解析失败：${escapeHtml(readError(err))}</p>`;
-    return;
-  }
-  const root = document.createElement('div');
-  for (const w of data.warnings) {
-    const warn = document.createElement('p');
-    warn.className = 'drive-preview__office-warn';
-    warn.textContent = `⚠ ${w}`;
-    root.appendChild(warn);
-  }
-  const article = document.createElement('article');
-  article.className = 'drive-preview__markdown drive-preview__docx';
-  for (const para of data.paragraphs ?? []) {
-    const heading = /^(#{1,6})\s+(.*)$/.exec(para);
-    if (heading) {
-      const h = document.createElement(`h${Math.min(heading[1].length, 4)}`);
-      h.textContent = heading[2];
-      article.appendChild(h);
-    } else {
-      const p = document.createElement('p');
-      p.textContent = para;
-      article.appendChild(p);
-    }
-  }
-  root.appendChild(article);
-  body.replaceChildren(root);
 }
 
 /** 列出 archiveState.innerPath 这一层的直接子项（一个层级） */
@@ -884,7 +889,8 @@ function buildArchiveCrumb(arc: ArchiveState): HTMLElement {
 function renderArchiveEntries() {
   const arc = archiveState;
   if (!arc) return;
-  const body = refs.previewBody;
+  // ZIP 内容浏览器只在外层 dialog 里呈现
+  const body = previewDom.outer.body;
   body.innerHTML = '';
   const wrap = document.createElement('div');
   wrap.className = 'drive-preview__archive';
@@ -963,10 +969,13 @@ async function openArchiveFile(entry: ArchiveEntry) {
   if (!archiveState) return;
   const file = archiveState.zip.file(entry.fullPath);
   if (!file) {
-    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
+    previewDom.outer.body.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
     return;
   }
-  refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">正在解压文件…</p>';
+  // 文件预览将出现在独立的内层 dialog（关闭它不影响外层 ZIP 浏览器）
+  activePreview = previewDom.inner;
+  activePreview.body.innerHTML = '<p class="drive-preview__placeholder">正在解压文件…</p>';
+  if (!activePreview.dialog.open) activePreview.dialog.showModal();
   try {
     const buffer = await file.async('uint8array');
     const mime = guessMime(entry.name);
@@ -986,19 +995,21 @@ async function openArchiveFile(entry: ArchiveEntry) {
       sourceLabel: `ZIP 内 · ${archiveState.zipName}`,
     });
   } catch (err) {
-    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">解压失败：${escapeHtml(readError(err))}</p>`;
+    activePreview.body.innerHTML = `<p class="drive-preview__placeholder">解压失败：${escapeHtml(readError(err))}</p>`;
   }
 }
 
-/** 嵌套 zip：用内层 zip 替换当前 archiveState */
+/** 嵌套 zip：用内层 zip 替换当前 archiveState（仍在 outer dialog 展示） */
 async function openNestedArchive(entry: ArchiveEntry) {
   if (!archiveState) return;
+  // 嵌套 zip 替换外层 archiveState，所有提示都打到外层 dialog
+  activePreview = previewDom.outer;
   const file = archiveState.zip.file(entry.fullPath);
   if (!file) {
-    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
+    activePreview.body.innerHTML = `<p class="drive-preview__placeholder">找不到条目：${escapeHtml(entry.fullPath)}</p>`;
     return;
   }
-  refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">正在解压嵌套压缩包…</p>';
+  activePreview.body.innerHTML = '<p class="drive-preview__placeholder">正在解压嵌套压缩包…</p>';
   try {
     const buffer = await file.async('uint8array');
     const innerZip = await JSZip.loadAsync(buffer);
@@ -1010,7 +1021,7 @@ async function openNestedArchive(entry: ArchiveEntry) {
     };
     renderArchiveEntries();
   } catch (err) {
-    refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">嵌套压缩包解析失败：${escapeHtml(readError(err))}</p>`;
+    activePreview.body.innerHTML = `<p class="drive-preview__placeholder">嵌套压缩包解析失败：${escapeHtml(readError(err))}</p>`;
   }
 }
 
@@ -1047,7 +1058,7 @@ function guessMime(name: string): string {
 }
 
 function showPreviewError(message: string, noteTone: 'info' | 'warn' = 'warn') {
-  refs.previewBody.innerHTML = `<p class="drive-preview__placeholder">${escapeHtml(message)}</p>`;
+  activePreview.body.innerHTML = `<p class="drive-preview__placeholder">${escapeHtml(message)}</p>`;
   setPreviewNote('请改用下载', noteTone);
 }
 
@@ -1084,15 +1095,17 @@ async function previewErrorMessage(res: Response): Promise<string> {
 
 async function openPreview(state: PreviewState) {
   previewState = state;
-  refs.previewName.textContent = state.name;
+  // 顶层文件（state.sourceUrl 不存在）→ 用外层 dialog；ZIP 内文件（sourceUrl 存在）→ 用独立内层 dialog
+  activePreview = state.sourceUrl ? previewDom.inner : previewDom.outer;
+  activePreview.name.textContent = state.name;
   setPreviewNote(previewMetaLine(state));
   // 下载链接：嵌套文件用 blob URL（API 路径无效），顶层文件用 /api/download/<key>
-  refs.previewDownload.href = state.sourceUrl || apiDownloadUrl(state.key);
-  if (state.sourceUrl) refs.previewDownload.setAttribute('download', state.name);
-  else refs.previewDownload.removeAttribute('download');
+  activePreview.download.href = state.sourceUrl || apiDownloadUrl(state.key);
+  if (state.sourceUrl) activePreview.download.setAttribute('download', state.name);
+  else activePreview.download.removeAttribute('download');
   setGalleryNav(Boolean(state.gallery));
-  refs.previewBody.innerHTML = '<p class="drive-preview__placeholder">载入中…</p>';
-  if (!refs.preview.open) refs.preview.showModal();
+  activePreview.body.innerHTML = '<p class="drive-preview__placeholder">载入中…</p>';
+  if (!activePreview.dialog.open) activePreview.dialog.showModal();
 
   // 客户端大小限制（提前拦，省一次下载）
   const sizeError = checkSizeLimit(state);
@@ -1129,7 +1142,7 @@ async function openPreview(state: PreviewState) {
     return;
   }
 
-  // docx / xlsx / pptx / ODF：拿 ArrayBuffer 本地解析（docx 用 mammoth，其余用内置解析器）
+  // docx / 表格：拿 ArrayBuffer 本地解析（docx 用 mammoth；xlsx/xlsm/xls/ods 用 SheetJS）
   if (state.kind === 'docx' || state.kind === 'sheet') {
     try {
       const res = await fetch(url);
@@ -1138,10 +1151,14 @@ async function openPreview(state: PreviewState) {
         return;
       }
       const buffer = await res.arrayBuffer();
-      if (state.kind === 'docx' && extOf(state.name) === 'docx') {
+      const ext = extOf(state.name);
+      if (ext === 'docx') {
         await renderDocxPreview(state, buffer);
+      } else if (ext === 'doc') {
+        // .doc 老版二进制：无成熟浏览器端解析，明确提示下载
+        activePreview.body.innerHTML = `<p class="drive-preview__placeholder">暂不支持 .doc（老版二进制）格式预览，请使用下载后用 WPS / Office 打开。</p>`;
       } else {
-        await renderOfficePreview(state, buffer);
+        await renderSpreadsheetPreview(buffer);
       }
     } catch (err) {
       showPreviewError(`请求失败：${escapeHtml(readError(err))}`);
@@ -1161,6 +1178,8 @@ async function openPreview(state: PreviewState) {
       const buffer = await res.arrayBuffer();
       const zip = await JSZip.loadAsync(buffer);
       archiveState = { zip, zipKey: state.key, zipName: state.name, innerPath: '' };
+      // 顶层压缩包也用外层 dialog 展示
+      activePreview = previewDom.outer;
       renderArchiveEntries();
     } catch (err) {
       showPreviewError(`加载压缩包失败：${escapeHtml(readError(err))}`);
@@ -1641,7 +1660,7 @@ function renderSearchResults(results: IndexEntry[], query: string) {
     iconWrap.innerHTML = e.folder ? ICON_FOLDER : fileIcon(e.name);
     if (!e.folder) {
       const kind = fileKind(e.name);
-      iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' || kind === 'sheet' || kind === 'slides' ? 'code' : kind;
+      iconWrap.dataset.kind = kind === 'docx' || kind === 'doc' || kind === 'sheet' ? 'code' : kind;
     }
 
     const body = document.createElement('div');
@@ -1785,16 +1804,33 @@ function bind() {
     load();
   });
 
+  // ----- 外层预览 dialog（顶层文件 / ZIP 内容浏览器） -----
   refs.previewClose?.addEventListener('click', () => refs.preview?.close());
-  refs.preview?.addEventListener('close', () => cleanupArchiveState());
+  // 关闭外层时清掉 archive 状态；如果内层还开着，一起关掉避免孤立
+  refs.preview?.addEventListener('close', () => {
+    cleanupArchiveState();
+    if (refs.previewInner.open) refs.previewInner.close();
+  });
   refs.previewPrev?.addEventListener('click', () => navigateGallery(-1));
   refs.previewNext?.addEventListener('click', () => navigateGallery(1));
-  refs.preview?.addEventListener('click', (e) => {
-    const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
-    const inside = e.clientX >= r.left && e.clientX <= r.right && e.clientY >= r.top && e.clientY <= r.bottom;
-    if (!inside) refs.preview.close();
-  });
+  // 保留 ESC 关闭；不再「点击空白处关闭」——必须用右上角 ✕ 关闭按钮
   refs.preview?.addEventListener('keydown', (e) => {
+    if (!previewState?.gallery) return;
+    if (e.key === 'ArrowLeft') { e.preventDefault(); navigateGallery(-1); }
+    else if (e.key === 'ArrowRight') { e.preventDefault(); navigateGallery(1); }
+  });
+
+  // ----- 内层预览 dialog（ZIP 内文件预览；独立层，关闭不影响外层） -----
+  refs.previewInnerClose?.addEventListener('click', () => refs.previewInner?.close());
+  // 关闭内层只清掉当前持有的 blob URL，不动外层 archive state
+  refs.previewInner?.addEventListener('close', () => {
+    setBlobUrl(null);
+    // 回到默认 outer 引用；下次顶层预览直接用 outer
+    activePreview = previewDom.outer;
+  });
+  refs.previewInnerPrev?.addEventListener('click', () => navigateGallery(-1));
+  refs.previewInnerNext?.addEventListener('click', () => navigateGallery(1));
+  refs.previewInner?.addEventListener('keydown', (e) => {
     if (!previewState?.gallery) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); navigateGallery(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); navigateGallery(1); }
@@ -1808,9 +1844,7 @@ function bind() {
   refs.searchBtn?.addEventListener('click', () => openSearch());
   refs.searchClose?.addEventListener('click', () => closeSearch());
   refs.searchInput?.addEventListener('input', () => void runSearch(refs.searchInput.value));
-  refs.searchModal?.addEventListener('click', (e) => {
-    if (e.target === refs.searchModal) closeSearch();
-  });
+  // 保留 ESC 关闭搜索弹窗；不再「点击空白处关闭」——必须用右上角 ✕ 关闭按钮
   refs.searchModal?.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') { e.preventDefault(); closeSearch(); }
   });

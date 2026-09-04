@@ -2,6 +2,7 @@
 //
 // 跑法：node scripts/smoke.mjs（需要 dev server 已经在 :8788 起来）
 // 覆盖：HTML / 列表（递归找文件）/ 单文件下载（带 Range）/ 预览 / 旧端点已不存在
+// 说明：样例文件从存储里自动发现（找 txt、找 zip），不依赖任何特定目录结构。
 const base = 'http://127.0.0.1:8788';
 
 async function fetchAndCheck(label, url, opts = {}, extraCheck) {
@@ -32,14 +33,15 @@ async function fetchAndCheck(label, url, opts = {}, extraCheck) {
 }
 
 async function listJson(prefix) {
-  // 新 URL 形态：path 在 URL 段里（encodeURI 保留 /）
-  const r = await fetch(`${base}/api/list/${encodeURI(prefix)}`);
+  // path 在 URL 段里（encodeURI 保留 /）
+  const rel = prefix.split('/').filter(Boolean).map(encodeURIComponent).join('/');
+  const r = await fetch(`${base}/api/list/${rel ? rel + '/' : ''}`);
   if (!r.ok) return null;
   return r.json();
 }
 
-/** BFS 找第一个文件（按字典序），限深 + 限数防止卡死 */
-async function findFirstFile(maxDepth = 4, maxItems = 200) {
+/** BFS 找某个扩展名的第一个文件（限深限数，防止卡死） */
+async function findFileByExt(ext, maxDepth = 6, maxItems = 400) {
   const queue = [{ prefix: '', depth: 0 }];
   let seen = 0;
   while (queue.length) {
@@ -47,7 +49,8 @@ async function findFirstFile(maxDepth = 4, maxItems = 200) {
     const data = await listJson(prefix);
     if (!data) return null;
     for (const f of data.files || []) {
-      if (!f.key.endsWith('/')) return f;
+      const name = f.key.split('/').pop() || '';
+      if (name.toLowerCase().endsWith(`.${ext}`)) return f;
     }
     if (depth < maxDepth) {
       for (const f of data.folders || []) {
@@ -69,9 +72,9 @@ async function main() {
     `   root: ${rootData.files?.length ?? 0} files, ${rootData.folders?.length ?? 0} folders`,
   );
 
-  const sample = await findFirstFile();
+  const sample = (await findFileByExt('txt')) || (await findFileByExt('md'));
   if (!sample) {
-    console.log('   (skip preview/download checks: no files in tree)');
+    console.log('   (skip preview/download checks: no text file in tree)');
   } else {
     console.log(`   sample file: ${sample.key}`);
 
@@ -93,14 +96,20 @@ async function main() {
       });
   }
 
-  await fetchAndCheck('GET /api/list/../etc/passwd (rejected)',
-    `${base}/api/list/${encodeURI('../etc/passwd')}`, { status: 400 });
+  // 路径穿越/非法段拒绝（URL 会先归一化裸 ../，这里用编码段确保到达函数）
+  await fetchAndCheck('GET /api/list/%2E%2E/x (rejected)',
+    `${base}/api/list/${encodeURIComponent('..')}/x`, { status: 400 });
 
-  // zip 直接走 preview 端点（不应再 415 —— 统一端点返回 raw bytes）
-  const zipSample = 'hadoop/一键部署脚本/脚本压缩包.zip';
-  const zipPrev = await fetchAndCheck(`GET /api/preview/${zipSample} (zip raw bytes)`,
-    `${base}/api/preview/${encodeURI(zipSample)}`);
-  console.log(`   zip preview size: ${zipPrev.res.headers.get('content-length')} bytes; status ${zipPrev.res.status}`);
+  // zip/压缩包直接走 preview 端点：统一端点必须回 raw bytes（不应 415 / attachment）
+  const zipSample = await findFileByExt('zip');
+  if (zipSample) {
+    const zipPrev = await fetchAndCheck(`GET /api/preview/${zipSample.key} (zip raw bytes)`,
+      `${base}/api/preview/${encodeURI(zipSample.key)}`);
+    const cdZip = zipPrev.res.headers.get('content-disposition') || '';
+    console.log(`   zip preview size: ${zipPrev.res.headers.get('content-length')} bytes; attachment=${cdZip.toLowerCase().includes('attachment') ? 'yes!' : 'no'}`);
+  } else {
+    console.log('   (no zip file found in tree — skipped zip preview check)');
+  }
 
   // 旧端点：Cloudflare Pages 没有匹配 function 时会走 SPA fallback 返回 HTML，
   // 这本身已经是「不存在」的信号；只要不是 JSON 业务响应就算「已移除」
