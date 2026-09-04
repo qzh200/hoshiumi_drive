@@ -136,6 +136,14 @@ const structuredData = JSON.stringify({
     <style is:inline set:html={themeStyle} />
   </head>
   <body>
+    <!--
+      页面切换加载进度条：默认透明，
+      切目录时由 app.ts 在 < 150ms 内补 .drive-progress--active 触发。
+      aria-hidden / pointer-events: none，不会被读屏或点击。
+    -->
+    <div class="drive-progress" data-progress aria-hidden="true">
+      <div class="drive-progress__bar"></div>
+    </div>
     <slot />
   </body>
 </html>

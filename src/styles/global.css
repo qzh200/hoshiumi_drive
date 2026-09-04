@@ -2134,3 +2134,153 @@ button.drive-preview__archive-crumb-seg:focus-visible {
     scroll-behavior: auto !important;
   }
 }
+
+/* ---- 16. 页面切换 loading 动画 ----
+ *
+ * 三件套：
+ *   1) 顶部进度条：固定在视口顶部，仿 NProgress 风格。
+ *      - 默认透明；切目录超过 150ms 才点亮，避免一闪而过。
+ *      - 0% → 80% 用 transition；80% → 100% 用 pulse 模拟「还在跑」。
+ *      - 完成态 0.2s 后整体淡出，再清类名。
+ *   2) 列表区 spinner：覆盖原本的纯文字「正在载入文件…」。
+ *   3) 行 stagger：列表重新渲染时，每行错峰 28ms 上浮出现。
+ *
+ * 注意：所有动画都会被上面的 prefers-reduced-motion 规则压到 0.01ms，
+ * 用户开启「减少动效」时进度条不会扫动、spinner 会变成静态圈——这是预期行为。
+ */
+.drive-progress {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 2px;
+  z-index: 100;
+  pointer-events: none;
+  background: transparent;
+  opacity: 0;
+  transition: opacity 0.18s ease;
+}
+
+.drive-progress__bar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--color-primary, #7f9df2) 55%, transparent),
+    var(--color-primary, #7f9df2),
+    var(--color-accent, #9d92ec)
+  );
+  box-shadow: 0 0 8px color-mix(in srgb, var(--color-primary, #7f9df2) 60%, transparent);
+  transition: width 0.4s cubic-bezier(0.2, 0, 0.2, 1);
+}
+
+.drive-progress--active {
+  opacity: 1;
+}
+
+.drive-progress--active .drive-progress__bar {
+  width: 80%;
+  /* 卡在 80% 时用轻闪 + 漂移告诉用户「还在请求」 */
+  animation: drive-progress-pulse 1.6s ease-in-out infinite;
+}
+
+.drive-progress--done .drive-progress__bar {
+  width: 100%;
+  animation: none;
+  transition: width 0.25s ease;
+}
+
+.drive-progress--done {
+  opacity: 0;
+  transition: opacity 0.45s ease 0.2s;
+}
+
+@keyframes drive-progress-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  50% {
+    opacity: 0.65;
+    transform: translateX(2%);
+  }
+}
+
+/* 列表 loading 容器：把原本的「静态文字」升级为「居中 spinner + 文字」 */
+.drive-list--loading {
+  position: relative;
+  min-height: 180px;
+}
+
+.drive-list--loading .drive-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  padding: 32px 16px;
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: 0.92rem;
+  letter-spacing: 0.04em;
+}
+
+.drive-spinner {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2.5px solid color-mix(in srgb, var(--color-primary, #7f9df2) 18%, transparent);
+  border-top-color: var(--color-primary, #7f9df2);
+  border-right-color: color-mix(
+    in srgb,
+    var(--color-accent, #9d92ec) 75%,
+    var(--color-primary, #7f9df2)
+  );
+  animation: drive-spin 0.85s linear infinite;
+  will-change: transform;
+}
+
+@keyframes drive-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* 列表重新出现时整体淡入，配合行 stagger */
+.drive-list--entering {
+  animation: drive-list-fade-in 0.32s ease both;
+}
+
+@keyframes drive-list-fade-in {
+  from {
+    opacity: 0.6;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+/* 行 stagger：单行 0.4s ease，相邻错开 28ms；只对前 24 行加延迟，更远的不延迟避免太晚 */
+.drive-list--entering .drive-row {
+  animation: drive-row-rise 0.4s cubic-bezier(0.2, 0.65, 0.25, 1) both;
+  animation-delay: calc(var(--row-index, 0) * 28ms);
+}
+
+@keyframes drive-row-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}

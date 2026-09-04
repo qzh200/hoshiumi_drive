@@ -79,6 +79,7 @@ const refs = {
   notice: $('[data-notice]') as HTMLElement,
   rowTpl: $('[data-row-template]') as HTMLTemplateElement,
   toasts: $('[data-toasts]') as HTMLElement,
+  progress: $('[data-progress]') as HTMLElement | null,
   // 外层预览 dialog：顶层文件预览 + ZIP 内容浏览器共用
   preview: $('[data-preview]') as HTMLDialogElement,
   previewName: $('[data-preview-name]') as HTMLElement,
@@ -818,8 +819,68 @@ function render(data: DriveListResponse) {
     return;
   }
   const frag = document.createDocumentFragment();
-  for (const item of items) frag.appendChild(makeRow(item));
+  items.forEach((item, i) => {
+    const row = makeRow(item);
+    // 给前 24 行打 stagger 序号（>24 不再延迟，避免长列表下尾行等太久）
+    if (i < 24) row.style.setProperty('--row-index', String(i));
+    frag.appendChild(row);
+  });
   refs.list!.appendChild(frag);
+}
+
+// ---------- 页面切换 loading ----------
+//
+// 切目录时给「视觉一致性」一个交代：顶部进度条 + 列表区 spinner + 行 stagger。
+// - 进度条延迟 150ms 出现：避免请求很快时一闪而过；
+// - endLoading 一定要在 finally 里调用（包括 fetch 抛错的情况），否则进度条会卡住。
+let progressShowTimer: ReturnType<typeof setTimeout> | null = null;
+let progressHideTimer: ReturnType<typeof setTimeout> | null = null;
+let loadingActive = false;
+
+function startLoading() {
+  loadingActive = true;
+  // 列表区：先替换为「spinner + 文字」，让用户立刻知道在请求
+  if (refs.list) {
+    refs.list.classList.add('drive-list--loading');
+    refs.list.setAttribute('aria-busy', 'true');
+    refs.list.innerHTML =
+      '<div class="drive-loading">' +
+      '<span class="drive-spinner" aria-hidden="true"></span>' +
+      '<span>正在载入文件…</span>' +
+      '</div>';
+  }
+  // 进度条：150ms 内请求完了就不显示，避免一闪
+  if (progressShowTimer) clearTimeout(progressShowTimer);
+  progressShowTimer = setTimeout(() => {
+    if (!loadingActive) return;
+    refs.progress?.classList.remove('drive-progress--done');
+    refs.progress?.classList.add('drive-progress--active');
+  }, 150);
+}
+
+function endLoading() {
+  loadingActive = false;
+  if (progressShowTimer) {
+    clearTimeout(progressShowTimer);
+    progressShowTimer = null;
+  }
+  if (refs.progress?.classList.contains('drive-progress--active')) {
+    // 走完到 100% 再淡出
+    refs.progress.classList.remove('drive-progress--active');
+    refs.progress.classList.add('drive-progress--done');
+    if (progressHideTimer) clearTimeout(progressHideTimer);
+    progressHideTimer = setTimeout(() => {
+      refs.progress?.classList.remove('drive-progress--done');
+    }, 700);
+  }
+  if (refs.list) {
+    refs.list.classList.remove('drive-list--loading');
+    refs.list.removeAttribute('aria-busy');
+    // 重新触发 stagger：先去掉再强制 reflow 再加回来
+    refs.list.classList.remove('drive-list--entering');
+    void refs.list.offsetWidth;
+    refs.list.classList.add('drive-list--entering');
+  }
 }
 
 async function load() {
@@ -828,12 +889,17 @@ async function load() {
   searchIndex = null;
   searchIndexScope = '';
   searchIndexPromise = null;
+  startLoading();
   try {
     const data = await api<DriveListResponse>(apiListUrl(prefix));
     lastList = data;
     render(data);
   } catch (error) {
+    // 失败也要把列表区填上错误信息；endLoading 会清掉 loading 类
     refs.list!.innerHTML = `<p class="drive-loading">载入失败：${escapeHtml(readError(error))}</p>`;
+  } finally {
+    // 不管成功失败都要收尾，否则进度条会卡住
+    endLoading();
   }
   renderCrumb();
   refs.up!.disabled = !prefix;
