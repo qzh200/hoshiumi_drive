@@ -206,7 +206,7 @@ interface ToastHandle {
   close: () => void;
 }
 
-function toast(title: string, detail?: string): ToastHandle {
+function toast(title: string, detail?: string, iconHtml: string = ICON_PACK): ToastHandle {
   const host = refs.toasts;
   const el = document.createElement('div');
   el.className = 'drive-toast';
@@ -214,7 +214,7 @@ function toast(title: string, detail?: string): ToastHandle {
 
   const icon = document.createElement('span');
   icon.className = 'drive-toast__icon';
-  icon.innerHTML = ICON_PACK;
+  icon.innerHTML = iconHtml;
 
   const body = document.createElement('div');
   body.className = 'drive-toast__body';
@@ -283,6 +283,23 @@ function toast(title: string, detail?: string): ToastHandle {
       dismiss();
     },
   };
+}
+
+// ---------- 下载通知 ----------
+//
+// 浏览器原生 <a download> 触发后没有标准事件能感知「下载完成」，
+// 所以这里的 toast 是「点击已触发」级别的反馈——告诉用户「我收到了，
+// 浏览器接管了，请在下载栏查看」。
+//
+// 视觉上跟 packFolder 的 toast 对齐：info → success 两段式，
+// 500ms 后转 success，自动 3s 关闭。
+function notifyDownload(name: string, size?: number) {
+  const sizeLine = size !== undefined ? ` · ${formatSize(size)}` : '';
+  const detail = size !== undefined ? `文件大小 ${formatSize(size)}` : '已发送下载请求';
+  const t = toast(`下载已触发：${name}`, detail, ICON_DOWNLOAD);
+  // 进度条走个 indeterminate，给一个「正在移交」的感觉，再转 success
+  t.setProgress(null);
+  setTimeout(() => t.done('success', `请在浏览器下载栏查看${sizeLine}`), 500);
 }
 
 // ---------- 预览 ----------
@@ -705,7 +722,7 @@ function updateActionBar() {
 
 // ---------- 列表行 ----------
 
-function makeLinkAction(icon: string, label: string, href: string, download: boolean): HTMLAnchorElement {
+function makeLinkAction(icon: string, label: string, href: string, download: boolean, name?: string, size?: number): HTMLAnchorElement {
   const a = document.createElement('a');
   a.href = href;
   a.className = 'drive-row__action';
@@ -713,6 +730,11 @@ function makeLinkAction(icon: string, label: string, href: string, download: boo
   a.setAttribute('aria-label', label);
   if (download) a.setAttribute('download', '');
   a.innerHTML = `${icon}<span>${label}</span>`;
+  // 下载类 anchor：点一下弹个 toast 提醒用户「已触发」；不 preventDefault，
+  // 让浏览器继续按 download 属性处理真正的下载流程
+  if (download && name) {
+    a.addEventListener('click', () => notifyDownload(name, size));
+  }
   return a;
 }
 
@@ -790,7 +812,7 @@ function makeRow(item: DriveItem): HTMLElement {
       }),
     );
     actions.appendChild(
-      makeLinkAction(ICON_DOWNLOAD, '下载', apiDownloadUrl(item.key), true),
+      makeLinkAction(ICON_DOWNLOAD, '下载', apiDownloadUrl(item.key), true, name, item.size),
     );
   }
   return tpl;
@@ -1632,6 +1654,15 @@ function bind() {
     if (e.key === 'ArrowLeft') { e.preventDefault(); navigateGallery(-1); }
     else if (e.key === 'ArrowRight') { e.preventDefault(); navigateGallery(1); }
   });
+  // 预览里的「下载」按钮：点一下弹 toast 提醒；不阻止浏览器继续按 download 属性下载
+  refs.previewDownload?.addEventListener('click', () => {
+    const a = refs.previewDownload;
+    if (!a) return;
+    // href 还没被 openPreview 写好时是 '#'，忽略（不应该被点中，但保险）
+    if (!a.getAttribute('href') || a.getAttribute('href') === '#') return;
+    const name = a.getAttribute('download') || previewState?.name || '文件';
+    notifyDownload(name, previewState?.size);
+  });
 
   // ----- 内层预览 dialog（ZIP 内文件预览；独立层，关闭不影响外层） -----
   refs.previewInnerClose?.addEventListener('click', () => refs.previewInner?.close());
@@ -1643,6 +1674,14 @@ function bind() {
   });
   refs.previewInnerPrev?.addEventListener('click', () => navigateGallery(-1));
   refs.previewInnerNext?.addEventListener('click', () => navigateGallery(1));
+  // 内层预览（ZIP 内文件）的下载按钮同理
+  refs.previewInnerDownload?.addEventListener('click', () => {
+    const a = refs.previewInnerDownload;
+    if (!a) return;
+    if (!a.getAttribute('href') || a.getAttribute('href') === '#') return;
+    const name = a.getAttribute('download') || previewState?.name || '文件';
+    notifyDownload(name, previewState?.size);
+  });
   refs.previewInner?.addEventListener('keydown', (e) => {
     if (!previewState?.gallery) return;
     if (e.key === 'ArrowLeft') { e.preventDefault(); navigateGallery(-1); }
