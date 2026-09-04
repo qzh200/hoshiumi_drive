@@ -1073,6 +1073,21 @@ button.drive-crumb__seg:disabled {
   box-shadow: 0 8px 30px -12px rgb(var(--shadow) / 0.5);
 }
 
+/* 视频元素默认渲染尺寸是 300×150，光靠 max-width/height: 100% 不会让它放大；
+   显式 100%×100% 让元素占满 body，再由 object-fit: contain 保持内容比例（黑边填充）。
+   图片保留原 max-* 行为：小图不会被强行拉大（object-fit: contain 也只是居中显示）。 */
+.drive-preview__body video {
+  width: 100%;
+  height: 100%;
+}
+
+/* dialog 自带 min-height: 200px，减去 title 56px 后 body 只有 144px，
+   即便上面把 video 强制 100% 也只能显示 100 像素高。视频预览时把 body 撑高到 360px，
+   配合 dialog 自身的 max-height: calc(100dvh - 32px) 不会出现「撑爆视口」问题。 */
+.drive-preview__body:has(> video) {
+  min-height: 360px;
+}
+
 .drive-preview__body iframe {
   flex: 1;
   width: 100%;
