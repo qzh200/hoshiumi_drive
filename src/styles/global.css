@@ -10,7 +10,24 @@
  * 写入 :root；本文件不直接写死任何品牌色。
  * ============================================================================= */
 
-/* ---- 0. 本地字体（cn-font-split 子集，已带 unicode-range） ---- */
+/* ---- 0. 全局 box-sizing + 本地字体 ---- */
+/* 全局 box-sizing: border-box 是现代 CSS 的标配。
+   没这一条时，.page-main { width: 100%; padding: 24px } 的总宽度 = 100% + 48px，
+   padding 加在宽度外面，导致 375px 视口下 page-main 实际是 423px，
+   右边 48px 直接被视口切掉——前面所有 min-width: 0 / width: 100% 的修复都白搭。
+   改成 border-box 后，width: 100% 已经包含了 padding，总宽度严格等于父级。 */
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html {
+  scroll-behavior: smooth;
+  -webkit-text-size-adjust: 100%;
+  /* 防兜底：即便某个子元素意外算出比视口宽的尺寸，也不要让整页出现横向滚动条 */
+  overflow-x: clip;
+}
 @font-face {
   font-family: 'Hoshiumi Sans';
   src: url('/fonts/ChillRoundFRegular/result.css') format('woff2-css');
@@ -83,10 +100,6 @@
 }
 
 /* ---- 2. 基础 ---- */
-html {
-  scroll-behavior: smooth;
-  -webkit-text-size-adjust: 100%;
-}
 
 /* hidden 属性必须真正生效：很多组件用了 display: flex/grid，会把 hidden 顶掉 */
 [hidden] {
@@ -96,6 +109,12 @@ html {
 body {
   margin: 0;
   min-height: 100dvh;
+  /* 必须显式锁死宽度：overflow-x: hidden 在 body 上会创建 block formatting context，
+     导致 body 宽度跟着内容最小宽度走（被 .drive-row 的 icon+名称+按钮 撑宽）。
+     显式 width: 100% + max-width: 100% 让 body 严格等于 html 宽度，
+     后续 page-shell / page-main / drive-list / drive-row 的 min-width: 0 才会真正生效。 */
+  width: 100%;
+  max-width: 100%;
   overflow-x: hidden;
   background-color: var(--color-bg, #f4f6fe);
   color: var(--ink);
@@ -338,12 +357,19 @@ button {
   flex-direction: column;
   min-height: 100dvh;
   width: 100%;
+  /* 同上：允许 shell 窄于 page-main 的最小内容宽度 */
+  min-width: 0;
 }
 
 .page-main {
   flex: 1;
   width: 100%;
   max-width: 960px;
+  /* flex 子项默认 min-width: auto，意思是"不能比内容还窄"——一旦行内容
+     (图标+名称+按钮+padding) 的最小内容宽度算出超过视口，整个 page-main
+     会被撑到比视口还宽，body/html 算出来的居中位置就错位了。
+     显式给 0 让 page-main 允许"窄于内容"，多余的内容由内层滚动/截断处理。 */
+  min-width: 0;
   margin: 0 auto;
   padding: clamp(72px, 10vh, 110px) 24px clamp(36px, 6vh, 60px);
 }
@@ -506,7 +532,11 @@ button.drive-crumb__seg:disabled {
 }
 
 .drive-toolbar__spacer {
-  flex: 1;
+  /* 这个 spacer 的本意是「把右侧按钮组推到右边」，但它的副作用是在中等宽度
+     (640~960px) 下把整行撑得比页面还宽，把搜索按钮挤出视口。
+     彻底不要这个行为：spacer 不占任何空间，左右组都从左往右自然流式排，
+     工具栏本身的 flex-wrap: wrap 会处理换行。 */
+  display: none;
 }
 
 .drive-tools {
@@ -658,6 +688,8 @@ button.drive-crumb__seg:disabled {
   backdrop-filter: blur(var(--card-blur, 20px)) saturate(1.05);
   -webkit-backdrop-filter: blur(var(--card-blur, 20px)) saturate(1.05);
   box-shadow: 0 14px 32px -24px rgb(var(--shadow) / 0.55);
+  /* 同 page-main：允许 list 窄于其行内容的最小宽度 */
+  min-width: 0;
 }
 
 .drive-row {
@@ -667,6 +699,9 @@ button.drive-crumb__seg:disabled {
   padding: 4px 8px;
   border-radius: 12px;
   transition: background-color 0.2s ease;
+  /* 同上：允许行窄于其内容（icon + main + actions）的最小宽度，
+     这样 main 区域才能真正收缩而不是把行撑出去 */
+  min-width: 0;
 }
 
 .drive-row + .drive-row {
@@ -1463,7 +1498,19 @@ button.drive-crumb__seg:disabled {
   animation-delay: var(--delay, 0ms);
 }
 
-/* ---- 14. 响应式 ---- */
+/* ---- 14. 响应式 ----
+ *
+ * 设计目标：UI 在任意视口宽度下都不出现横向滚动条。
+ * 现状注意：原 640px 断点用了 `grid-template-columns`，但 .drive-row 实际是
+ * `display: flex`——那条规则从未生效。下面整套全部按 flex 行为重写。
+ *
+ * 两层断点：
+ *   - ≤ 640px：头部上下堆叠；文件行操作按钮换到下一行
+ *   - ≤ 420px：操作按钮隐藏文字只留图标
+ *
+ * 注意：工具栏的 spacer 已经在主样式里被彻底 display:none（不依赖断点），
+ * 因为它的 `flex: 1` 在 640~960px 这个"刚好放不下"的中间宽度区间是最大的坑。
+ */
 @media (max-width: 640px) {
   .drive-header {
     flex-direction: column;
@@ -1473,11 +1520,35 @@ button.drive-crumb__seg:disabled {
     width: 100%;
     justify-content: flex-end;
   }
+  /* 文件行：操作按钮换到下一行（右对齐），主区域保持弹性收缩 */
   .drive-row {
-    grid-template-columns: 28px minmax(0, 1fr) auto;
+    flex-wrap: wrap;
+    row-gap: 4px;
+  }
+  .drive-row__main {
+    flex: 1 1 100%;
+    min-width: 0;
+  }
+  .drive-row__actions {
+    width: 100%;
+    justify-content: flex-end;
+    padding-top: 4px;
   }
   .drive-row__meta {
     display: none;
+  }
+}
+
+@media (max-width: 420px) {
+  /* 极窄屏：操作按钮只显示图标，节省横向空间 */
+  .drive-row__action span {
+    display: none;
+  }
+  .drive-row__action {
+    padding: 6px 10px;
+  }
+  .drive-row__action svg {
+    margin: 0;
   }
 }
 
