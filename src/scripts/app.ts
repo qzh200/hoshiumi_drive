@@ -317,9 +317,17 @@ function renderArchiveEntries() {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'drive-preview__archive-item';
+      if (e.isDir) btn.dataset.kind = 'folder';
+      else btn.dataset.kind = fileKind(e.name);
       btn.addEventListener('click', () => onArchiveEntryClick(e));
       const icon = document.createElement('span');
       icon.className = 'drive-preview__archive-item-icon';
+      // 与外层 .drive-row__icon 一样：docx/doc/sheet 归到 code 配色
+      if (e.isDir) icon.dataset.kind = 'folder';
+      else {
+        const k = fileKind(e.name);
+        icon.dataset.kind = k === 'docx' || k === 'doc' || k === 'sheet' ? 'code' : k;
+      }
       icon.innerHTML = e.isDir ? ICON_FOLDER : fileIcon(e.name);
       const name = document.createElement('span');
       name.className = 'drive-preview__archive-item-name';
@@ -327,7 +335,7 @@ function renderArchiveEntries() {
       name.title = e.fullPath;
       const size = document.createElement('span');
       size.className = 'drive-preview__archive-item-size';
-      size.textContent = e.isDir ? '—' : formatSize(e.size);
+      size.textContent = e.isDir ? '文件夹' : formatSize(e.size);
       btn.append(icon, name, size);
       list.appendChild(btn);
     }
