@@ -50,8 +50,8 @@ site:
 # 顶部 / 头部
 # =============================================================================
 header:
-  # 顶部说明（显示在标题上方的极小字标签）
-  eyebrow: PRIVATE CLOUD STORAGE
+  # 顶部说明（显示在标题上方的极小字标签，中文以与全站画风一致）
+  eyebrow: 个人云盘 · CLOUD STORAGE
 
   # 主标题（h1）
   title: Hoshiumi Drive
@@ -78,20 +78,17 @@ theme:
     primary: '#7f9df2'
     secondary: '#f0a9cc'
     accent: '#9d92ec'
-    # 渐变端点（与博客一致：浅蓝紫 → 浅粉 → 浅紫）
-    gradientStart: '#eef2ff'
-    gradientEnd: '#fdf2ff'
 
   dark:
-    background: '#11182d'
+    # 与 hoshiumi_home 完全一致
+    background: '#1c2145'
     primary: '#9fb6ff'
     secondary: '#f2b4dc'
     accent: '#bdb0ff'
-    gradientStart: '#0d1226'
-    gradientEnd: '#1a0f24'
 
   card:
-    radius: 18px
+    # 与 hoshiumi_home 完全一致：22px 圆角 + 20px 毛玻璃
+    radius: 22px
     blur: 20px
     borderOpacity: 0.35
     bgOpacity: 0.6

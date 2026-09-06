@@ -30,8 +30,6 @@ const Theme = z.object({
   primary: HexColor,
   secondary: HexColor,
   accent: HexColor,
-  gradientStart: HexColor,
-  gradientEnd: HexColor,
 });
 
 const Card = z.object({

@@ -16,8 +16,6 @@ export function buildThemeStyle(cfg: SiteConfig): string {
     `--color-primary:${light.primary};`,
     `--color-secondary:${light.secondary};`,
     `--color-accent:${light.accent};`,
-    `--gradient-start:${light.gradientStart};`,
-    `--gradient-end:${light.gradientEnd};`,
     `--card-radius:${card.radius};`,
     `--card-blur:${card.blur};`,
     `--card-border-opacity:${card.borderOpacity};`,
@@ -28,8 +26,6 @@ export function buildThemeStyle(cfg: SiteConfig): string {
     `--color-primary:${dark.primary};`,
     `--color-secondary:${dark.secondary};`,
     `--color-accent:${dark.accent};`,
-    `--gradient-start:${dark.gradientStart};`,
-    `--gradient-end:${dark.gradientEnd};`,
     '}',
   ].join('');
 }

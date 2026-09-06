@@ -1,16 +1,17 @@
 /* =============================================================================
  * global.css —— 全站样式
  *
- * 设计目标：模仿博客（koharu）的视觉语言——
- *   · 浅蓝紫渐变底（light：#eef2ff → #fdf2ff，dark：#0d1226 → #1a0f24）
- *   · 玻璃质感卡片（半透明白 / 深靛蓝 + 模糊 + 圆角）
- *   · 主题色高亮：蓝紫（#7f9df2 / #9fb6ff）
+ * 设计目标：与 hoshiumi_home 同一画风——
+ *   · 蓝紫 / 樱花粉 / 星雾紫主题色高亮（由 config/site.yaml 注入）
+ *   · 玻璃质感卡片（22px 圆角 + 20px 毛玻璃 + 半透明底）
+ *   · 极光背景：主题色光斑 + 渐变氛围 + 星星 + 噪点
+ *   · 字体与排版与 home 完全一致
  *
  * 品牌色与版式数值由 Layout.astro 从 config/site.yaml 编译为 CSS 变量，
  * 写入 :root；本文件不直接写死任何品牌色。
  * ============================================================================= */
 
-/* ---- 0. 全局 box-sizing + 本地字体 ---- */
+/* ---- 0. 全局 box-sizing ---- */
 /* 全局 box-sizing: border-box 是现代 CSS 的标配。
    没这一条时，.page-main { width: 100%; padding: 24px } 的总宽度 = 100% + 48px，
    padding 加在宽度外面，导致 375px 视口下 page-main 实际是 423px，
@@ -27,37 +28,6 @@ html {
   -webkit-text-size-adjust: 100%;
   /* 防兜底：即便某个子元素意外算出比视口宽的尺寸，也不要让整页出现横向滚动条 */
   overflow-x: clip;
-}
-@font-face {
-  font-family: 'Hoshiumi Sans';
-  src: url('/fonts/ChillRoundFRegular/result.css') format('woff2-css');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Hoshiumi Sans';
-  src: url('/fonts/ChillRoundFBold/result.css') format('woff2-css');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Hoshiumi Gothic';
-  src: url('/fonts/GenJyuuGothic-P-Regular/result.css') format('woff2-css');
-  font-weight: 400;
-  font-style: normal;
-  font-display: swap;
-}
-
-@font-face {
-  font-family: 'Hoshiumi Gothic';
-  src: url('/fonts/GenJyuuGothic-P-Bold/result.css') format('woff2-css');
-  font-weight: 700;
-  font-style: normal;
-  font-display: swap;
 }
 
 /* ---- 1. 中性结构 token ---- */
@@ -119,10 +89,10 @@ body {
   background-color: var(--color-bg, #f4f6fe);
   color: var(--ink);
   font-family:
-    'Hoshiumi Sans', 'Hoshiumi Gothic', 'PingFang SC', 'Hiragino Sans GB',
-    'Microsoft YaHei', ui-sans-serif, system-ui, -apple-system, 'Segoe UI',
-    Roboto, 'Helvetica Neue', Arial, sans-serif;
-  font-size: 15px;
+    ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto,
+    'PingFang SC', 'Hiragino Sans GB', 'Microsoft YaHei', 'Noto Sans SC',
+    'Helvetica Neue', Arial, sans-serif;
+  font-size: 16px;
   line-height: 1.65;
   -webkit-font-smoothing: antialiased;
   text-rendering: optimizeLegibility;
@@ -185,6 +155,41 @@ button {
   border-color: rgb(var(--line) / 0.7);
 }
 
+/* 左上角「返回 Hoshiumi 主页」按钮：与 .theme-toggle 完全镜像 */
+.back-link {
+  position: fixed;
+  top: max(18px, env(safe-area-inset-top));
+  left: max(18px, env(safe-area-inset-left));
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 999px;
+  border: 1px solid rgb(var(--line) / var(--card-border-opacity, 0.4));
+  background: var(--card-fill);
+  color: var(--ink-soft);
+  backdrop-filter: blur(var(--card-blur, 18px));
+  text-decoration: none;
+  transition:
+    transform 0.25s ease,
+    color 0.25s ease,
+    border-color 0.25s ease;
+}
+
+.back-link:hover {
+  transform: translateY(-2px);
+  color: var(--color-primary);
+  border-color: rgb(var(--line) / 0.7);
+}
+
+.back-link svg {
+  display: block;
+  width: 18px;
+  height: 18px;
+}
+
 .theme-toggle__icon {
   display: none;
   width: 18px;
@@ -221,10 +226,10 @@ button {
 .bg-scene--gradient .bg-scene__tint {
   background: linear-gradient(
     172deg,
-    var(--gradient-start, #eef2ff) 0%,
+    color-mix(in srgb, var(--color-primary, #7f9df2) 9%, transparent) 0%,
     transparent 36%,
     transparent 64%,
-    var(--gradient-end, #fdf2ff) 100%
+    color-mix(in srgb, var(--color-secondary, #f0a9cc) 8%, transparent) 100%
   );
 }
 
@@ -387,32 +392,34 @@ button {
 
 .drive-header__title {
   margin: 4px 0 0;
-  font-size: clamp(1.9rem, 4vw, 2.4rem);
+  /* 与 hoshiumi_home 的 h1 一致 */
+  font-size: clamp(2.3rem, 4.6vw, 3.4rem);
   font-weight: 800;
-  line-height: 1.2;
+  line-height: 1.12;
   letter-spacing: 0.005em;
   color: var(--ink);
 }
 
 .drive-header__subtitle {
-  margin: 4px 0 0;
-  font-size: 0.95rem;
+  margin: clamp(8px, 1.6vh, 14px) 0 0;
+  font-size: clamp(0.95rem, 1.8vw, 1.15rem);
   font-weight: 500;
-  letter-spacing: 0.3em;
+  letter-spacing: 0.5em;
+  text-indent: 0.5em;
   color: var(--ink-soft);
 }
 
 .drive-header__desc {
-  margin: 14px 0 0;
-  font-size: 0.92rem;
-  line-height: 1.7;
+  margin: clamp(16px, 3vh, 26px) 0 0;
+  font-size: 1rem;
+  line-height: 1.9;
   color: var(--ink-soft);
   max-width: 38em;
 }
 
 .drive-header__eyebrow {
   margin: 0;
-  font-size: 11px;
+  font-size: 0.78rem;
   letter-spacing: 0.18em;
   font-weight: 600;
   color: var(--ink-faint);
@@ -682,7 +689,7 @@ button.drive-crumb__seg:disabled {
   flex-direction: column;
   gap: 8px;
   padding: 12px;
-  border-radius: var(--card-radius, 18px);
+  border-radius: var(--card-radius, 22px);
   border: 1px solid rgb(var(--line) / var(--card-border-opacity, 0.35));
   background: var(--card-fill);
   backdrop-filter: blur(var(--card-blur, 20px)) saturate(1.05);
@@ -872,7 +879,7 @@ button.drive-crumb__seg:disabled {
 /* ---- 11. 通用小弹窗（登录 / prompt / confirm 共用 .drive-dialog） ---- */
 .drive-dialog {
   border: 1px solid rgb(var(--line) / 0.3);
-  border-radius: var(--card-radius, 18px);
+  border-radius: var(--card-radius, 22px);
   padding: 0;
   background: var(--card-fill);
   color: var(--ink);
@@ -971,7 +978,7 @@ button.drive-crumb__seg:disabled {
   flex-direction: column;
   padding: 0;
   border: 1px solid rgb(var(--line) / 0.3);
-  border-radius: var(--card-radius, 18px);
+  border-radius: var(--card-radius, 22px);
   background: var(--card-fill-solid);
   color: var(--ink);
   box-shadow: 0 24px 60px -16px rgb(var(--shadow) / 0.7);
@@ -1640,7 +1647,7 @@ button.drive-crumb__seg:disabled {
   flex-direction: column;
   padding: 0;
   border: 1px solid rgb(var(--line) / 0.3);
-  border-radius: var(--card-radius, 18px);
+  border-radius: var(--card-radius, 22px);
   background: var(--card-fill-solid);
   color: var(--ink);
   box-shadow: 0 24px 60px -16px rgb(var(--shadow) / 0.7);
